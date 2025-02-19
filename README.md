@@ -1,109 +1,121 @@
-# hoot
+# hoot - A Nostr CLI Tool
 
-A secure command-line interface for interacting with the Nostr protocol. Post messages, manage your profile, and interact with multiple relays while keeping your private key encrypted locally.
+A secure command-line interface for interacting with the Nostr network. Features encrypted key storage, profile management, and multi-relay support.
 
 ## Features
 
-- 🔒 Secure key management with scrypt-based encryption
-- 📝 Create and publish posts with automatic hashtag detection
-- 👤 View and update profile information
-- 🔄 Multi-relay support with configurable relay list
-- 📜 View recent post history
-- 🌐 Cross-platform support (Windows, macOS, Linux)
+- Secure encrypted storage of private keys
+- Post messages to multiple relays
+- View and edit profile information
+- List recent posts
+- Configurable relay list
+- Automatic hashtag detection
+- Cross-platform support (Windows, macOS, Linux)
+
+## Prerequisites
+
+- Go 1.19 or later
+- Git
 
 ## Installation
 
-```bash
-go install github.com/oth-body/hoot@latest
-```
+1. Clone the repository:
+   ```bash
+   git clone https://github.com/oth-body/hoot.git
+   cd hoot
+   ```
 
-## Quick Start
+2. Install dependencies:
+   ```bash
+   go mod download
+   ```
 
-1. Store your private key (you'll be prompted for an encryption password):
-```bash
-hoot -s -k "your-private-key"
-```
+3. Build the binary:
+   ```bash
+   go build -o hoot
+   ```
 
-2. Make your first post:
-```bash
-hoot -m "Hello Nostr! #introduction"
-```
+4. (Optional) Move the binary to your PATH:
+   ```bash
+   # Linux/macOS
+   sudo mv hoot /usr/local/bin/
+
+   # Windows
+   # Move hoot.exe to a directory in your PATH
+   ```
 
 ## Configuration
 
 ### Relay Configuration
 
-The tool looks for relay URLs in the following order:
-1. Local `relays.txt` in the current directory
-2. System config directory:
-   - Windows: `%APPDATA%/hoot/relays.txt`
-   - macOS: `~/Library/Application Support/hoot/relays.txt`
-   - Linux: `~/.config/hoot/relays.txt`
+Create a `relays.txt` file either in:
+- The current directory, or
+- Your config directory:
+  - Linux: `~/.config/nostr-cli/`
+  - macOS: `~/Library/Application Support/nostr-cli/`
+  - Windows: `%APPDATA%\nostr-cli\`
 
-Create a `relays.txt` file with one relay URL per line:
+Example `relays.txt`:
 ```
 wss://relay.damus.io
 wss://relay.nostr.band
 wss://nostr.wine
 ```
 
+If no `relays.txt` is found, default relays will be used.
+
 ## Usage
 
+### Store Your Private Key
+
+```bash
+hoot -s -k <your-private-key>
+```
+You'll be prompted to create an encryption password.
+
 ### View Your Public Key
+
 ```bash
 hoot
 ```
 
 ### Post a Message
+
 ```bash
-hoot -m "Your message here #nostr"
+hoot -m "Hello Nostr! #introduction"
+```
+
+### List Recent Posts
+
+```bash
+hoot -l
 ```
 
 ### View Profile
+
 ```bash
 hoot -p
 ```
 
 ### Update Profile
+
 ```bash
-hoot -u '{"name":"Your Name","about":"Your bio"}'
+hoot -u '{"name":"Alice","about":"Nostr enthusiast"}'
 ```
 
-### List Recent Posts
-```bash
-hoot -l
-```
+### Using Custom Relays for a Single Command
 
-### Use Custom Relays for a Single Command
 ```bash
-hoot -r "wss://relay1.com,wss://relay2.com" -m "Your message"
+hoot -r "wss://relay1.com,wss://relay2.com" -m "Hello from custom relays!"
 ```
 
 ## Security
 
-- Private keys are encrypted using XSalsa20-Poly1305
-- Key derivation uses scrypt for password-based encryption
-- Keys are stored in the system's config directory with appropriate permissions
-- Password is required for every command that needs the private key
+- Private keys are encrypted using XSalsa20 and Poly1305
+- Key derivation uses Scrypt
+- Keys are stored in your system's config directory with appropriate permissions
 
-## Building from Source
-
-```bash
-git clone https://github.com/oth-body/hoot
-cd hoot
-go build
-```
-
-## Dependencies
-
-- github.com/nbd-wtf/go-nostr: Nostr protocol implementation
-- golang.org/x/crypto: Cryptographic functions
-- Standard Go libraries
 
 ## Contributing
 
 Contributions are welcome! Please feel free to submit a Pull Request.
-
-## License
-
-MIT License 
