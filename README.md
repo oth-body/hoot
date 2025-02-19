@@ -1,6 +1,6 @@
 # hoot - A Nostr CLI Tool
 
-A secure command-line interface for interacting with the Nostr network. Features encrypted key storage, profile management, and multi-relay support.
+A secure command-line interface for interacting with the Nostr network. Features encrypted key storage, profile management, and multi-relay support. Made for shenanigans,not for serious critical use
 
 ## Features
 
