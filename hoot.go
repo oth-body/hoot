@@ -11,12 +11,15 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/nbd-wtf/go-nostr"
 	"github.com/nbd-wtf/go-nostr/nip19"
+	"golang.org/x/crypto/bcrypt"
 	"golang.org/x/crypto/nacl/secretbox"
 	"golang.org/x/crypto/scrypt"
+	"golang.org/x/term"
 )
 
 const (
@@ -30,9 +33,12 @@ var defaultRelays = []string{
 	"wss://nostr.wine",
 }
 
+// Updated StoredKey includes the password hash.
 type StoredKey struct {
 	EncryptedKey []byte `json:"encrypted_key"`
 	Salt         []byte `json:"salt"`
+	// PasswordHash stores the bcrypt hash of the password.
+	PasswordHash string `json:"password_hash"`
 }
 
 // withLoading shows a simple spinner until fn() finishes.
@@ -57,6 +63,20 @@ func withLoading(message string, fn func() error) error {
 	// Clear the loading line
 	fmt.Printf("\r%s done\n", message)
 	return err
+}
+
+// hashPassword creates a bcrypt hash of the given password.
+func hashPassword(password string) (string, error) {
+	hashedBytes, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
+	if err != nil {
+		return "", err
+	}
+	return string(hashedBytes), nil
+}
+
+// checkPassword verifies that the provided password matches the hashed one.
+func checkPassword(hashedPassword, password string) error {
+	return bcrypt.CompareHashAndPassword([]byte(hashedPassword), []byte(password))
 }
 
 func getConfigDir() string {
@@ -138,13 +158,25 @@ func encryptKey(key []byte, password []byte) (*StoredKey, error) {
 	copy(secretKey[:], derivedKey[:32])
 	encryptedKey := secretbox.Seal(nonce[:], key, &nonce, &secretKey)
 
+	// Generate bcrypt hash of the password.
+	pwdHash, err := hashPassword(string(password))
+	if err != nil {
+		return nil, err
+	}
+
 	return &StoredKey{
 		EncryptedKey: encryptedKey,
 		Salt:         salt,
+		PasswordHash: pwdHash,
 	}, nil
 }
 
 func decryptKey(storedKey *StoredKey, password []byte) ([]byte, error) {
+	// Verify that the provided password matches the stored hash.
+	if err := checkPassword(storedKey.PasswordHash, string(password)); err != nil {
+		return nil, fmt.Errorf("password verification failed: %w", err)
+	}
+
 	// Derive encryption key from password and salt
 	derivedKey, err := deriveKey(password, storedKey.Salt)
 	if err != nil {
@@ -346,10 +378,14 @@ func main() {
 	updatePtr := flag.String("u", "", "Update profile info")
 	flag.Parse()
 
-	// Prompt for password
+	// Read encryption password without echoing
 	fmt.Print("Enter encryption password: ")
-	var password string
-	fmt.Scanln(&password)
+	bytePassword, err := term.ReadPassword(int(syscall.Stdin))
+	if err != nil {
+		log.Fatalf("Error reading password: %v", err)
+	}
+	fmt.Println("") // newline after password input
+	password := string(bytePassword)
 
 	// Save a new key action with loading bar.
 	if *storePtr {
