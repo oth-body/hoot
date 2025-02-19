@@ -1,4 +1,3 @@
-ws://100.107.48.124:4848/
 wss://purplerelay.com/
 wss://nos.lol/
 wss://relay.damus.io
