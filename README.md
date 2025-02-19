@@ -115,7 +115,3 @@ hoot -r "wss://relay1.com,wss://relay2.com" -m "Hello from custom relays!"
 - Key derivation uses Scrypt
 - Keys are stored in your system's config directory with appropriate permissions
 
-
-## Contributing
-
-Contributions are welcome! Please feel free to submit a Pull Request.
