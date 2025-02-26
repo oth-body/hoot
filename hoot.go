@@ -25,7 +25,7 @@ import (
 const (
 	appName     = "nostr-cli"
 	keyFileName = "nostr_key.enc"
-	version     = "1.0.0" // Define the version here
+	version     = "0.0.4" // Define the version here
 )
 
 var defaultRelays = []string{
