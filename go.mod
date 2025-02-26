@@ -5,6 +5,7 @@ go 1.24.0
 require (
 	github.com/nbd-wtf/go-nostr v0.50.0
 	golang.org/x/crypto v0.33.0
+	golang.org/x/term v0.29.0
 )
 
 require (

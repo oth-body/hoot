@@ -25,6 +25,7 @@ import (
 const (
 	appName     = "nostr-cli"
 	keyFileName = "nostr_key.enc"
+	version     = "1.0.0" // Define the version here
 )
 
 var defaultRelays = []string{
@@ -41,7 +42,6 @@ type StoredKey struct {
 	PasswordHash string `json:"password_hash"`
 }
 
-// withLoading shows a simple spinner until fn() finishes.
 func withLoading(message string, fn func() error) error {
 	done := make(chan bool)
 	go func() {
@@ -376,7 +376,14 @@ func main() {
 	listPtr := flag.Bool("l", false, "List last 4 posts from your profile")
 	profilePtr := flag.Bool("p", false, "Retrieve and display profile info")
 	updatePtr := flag.String("u", "", "Update profile info")
+	versionPtr := flag.Bool("version", false, "Display the version")
 	flag.Parse()
+
+	// Handle version flag
+	if *versionPtr {
+		fmt.Printf("nostr-cli version %s\n", version)
+		return
+	}
 
 	// Read encryption password without echoing
 	fmt.Print("Enter encryption password: ")
@@ -428,7 +435,6 @@ func main() {
 		log.Fatalf("Failed to derive public key: %v", err)
 	}
 
-	// *** Show the list of relays loaded from file (or defaults) ***
 	relaysFromFile := getRelayList()
 	fmt.Println("Loaded relays:")
 	for _, r := range relaysFromFile {

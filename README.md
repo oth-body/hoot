@@ -48,8 +48,7 @@ A secure command-line interface for interacting with the Nostr network. Features
 
 ### Relay Configuration
 
-Create a `relays.txt` file either in:
-- The current directory, or
+Create a `relays.txt` file  in:
 - Your config directory:
   - Linux: `~/.config/nostr-cli/`
   - macOS: `~/Library/Application Support/nostr-cli/`
