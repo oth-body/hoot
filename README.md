@@ -1,16 +1,14 @@
 # hoot - A Nostr CLI Tool
 
-A secure command-line interface for interacting with the Nostr network. Features encrypted key storage, profile management, and multi-relay support. Made for shenanigans,not for serious critical use
+A simple command-line tool for using the Nostr network. It keeps your keys safe, lets you manage your profile, and supports multiple relays. It's made for fun, not serious use.
 
 ## Features
 
-- Secure encrypted storage of private keys
+- Safe storage of private keys
 - Post messages to multiple relays
-- View and edit profile information
+- View and edit profile information (editing is still being worked on)
 - List recent posts
-- Configurable relay list
-- Automatic hashtag detection
-- Cross-platform support (Windows, macOS, Linux)
+- Customizable relay list
 
 ## Prerequisites
 
@@ -61,7 +59,7 @@ wss://relay.nostr.band
 wss://nostr.wine
 ```
 
-If no `relays.txt` is found, default relays will be used.
+If no `relays.txt` is found, the above default relays will be used.
 
 ## Usage
 
