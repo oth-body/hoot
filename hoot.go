@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -367,6 +368,152 @@ func editProfile(privateKey, newContent, pubKey string, relays []string) {
 	}
 }
 
+// registerAsHandler registers the app as a handler for specific kinds.
+func registerAsHandler(privateKey, publicKey string, kinds []int, platforms map[string]string) error {
+	// Create a kind 1984 event for handler registration
+	event := nostr.Event{
+		PubKey:    publicKey,
+		CreatedAt: nostr.Timestamp(time.Now().Unix()),
+		Kind:      1984,
+		Tags:      nostr.Tags{},
+		Content:   "",
+	}
+
+	// Add tags for supported kinds and platforms
+	for _, kind := range kinds {
+		event.Tags = append(event.Tags, nostr.Tag{"k", fmt.Sprintf("%d", kind)})
+	}
+	for platform, url := range platforms {
+		event.Tags = append(event.Tags, nostr.Tag{"p", platform, url})
+	}
+
+	// Sign the event
+	if err := event.Sign(privateKey); err != nil {
+		return fmt.Errorf("failed to sign handler registration event: %w", err)
+	}
+
+	// Publish the event to relays
+	ctx := context.Background()
+	relays := getRelayList()
+	pool := nostr.NewSimplePool(ctx)
+	for _, relayURL := range relays {
+		relay, err := pool.EnsureRelay(relayURL)
+		if err != nil {
+			log.Printf("Failed to connect to relay %s: %v", relayURL, err)
+			continue
+		}
+		defer relay.Close()
+
+		if err := relay.Publish(ctx, event); err != nil {
+			log.Printf("Failed to publish to relay %s: %v", relay.URL, err)
+		} else {
+			fmt.Printf("Handler registration published to relay: %s\n", relay.URL)
+		}
+	}
+	return nil
+}
+
+// recommendApp publishes a recommendation for an app for a specific kind.
+func recommendApp(privateKey, publicKey, handlerPubKey, handlerDIdentifier string, kind int, relayHint, platform string) error {
+	// Create a kind 1985 event for app recommendation
+	event := nostr.Event{
+		PubKey:    publicKey,
+		CreatedAt: nostr.Timestamp(time.Now().Unix()),
+		Kind:      1985,
+		Tags: nostr.Tags{
+			{"a", fmt.Sprintf("%s:%s:%d", handlerPubKey, handlerDIdentifier, kind)},
+			{"p", platform},
+		},
+		Content: relayHint,
+	}
+
+	// Sign the event
+	if err := event.Sign(privateKey); err != nil {
+		return fmt.Errorf("failed to sign app recommendation event: %w", err)
+	}
+
+	// Publish the event to relays
+	ctx := context.Background()
+	relays := getRelayList()
+	pool := nostr.NewSimplePool(ctx)
+	for _, relayURL := range relays {
+		relay, err := pool.EnsureRelay(relayURL)
+		if err != nil {
+			log.Printf("Failed to connect to relay %s: %v", relayURL, err)
+			continue
+		}
+		defer relay.Close()
+
+		if err := relay.Publish(ctx, event); err != nil {
+			log.Printf("Failed to publish to relay %s: %v", relay.URL, err)
+		} else {
+			fmt.Printf("App recommendation published to relay: %s\n", relay.URL)
+		}
+	}
+	return nil
+}
+
+// findHandlers queries relays for handlers of a specific kind.
+func findHandlers(kind int) ([]struct {
+	PubKey         string
+	SupportedKinds []int
+	Platforms      map[string]string
+}, error) {
+	// Use relay list from file or default
+	relays := getRelayList()
+	filter := nostr.Filter{
+		Kinds: []int{1984},
+		Tags:  nostr.TagMap{"k": []string{fmt.Sprintf("%d", kind)}},
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	var handlers []struct {
+		PubKey         string
+		SupportedKinds []int
+		Platforms      map[string]string
+	}
+
+	for _, url := range relays {
+		relay, err := nostr.RelayConnect(ctx, url)
+		if err != nil {
+			log.Printf("Error connecting to relay %s: %v", url, err)
+			continue
+		}
+		defer relay.Close()
+
+		evCh, err := relay.QueryEvents(ctx, filter)
+		if err != nil {
+			log.Printf("Error querying relay %s: %v", url, err)
+			continue
+		}
+
+		for ev := range evCh {
+			handler := struct {
+				PubKey         string
+				SupportedKinds []int
+				Platforms      map[string]string
+			}{
+				PubKey:    ev.PubKey,
+				Platforms: make(map[string]string),
+			}
+
+			for _, tag := range ev.Tags {
+				if tag[0] == "k" {
+					kind, err := strconv.Atoi(tag[1])
+					if err == nil {
+						handler.SupportedKinds = append(handler.SupportedKinds, kind)
+					}
+				} else if tag[0] == "p" && len(tag) > 2 {
+					handler.Platforms[tag[1]] = tag[2]
+				}
+			}
+			handlers = append(handlers, handler)
+		}
+	}
+	return handlers, nil
+}
+
 func main() {
 	// Define command-line flags
 	messagePtr := flag.String("m", "", "Message to post (optional)")
@@ -377,6 +524,14 @@ func main() {
 	profilePtr := flag.Bool("p", false, "Retrieve and display profile info")
 	updatePtr := flag.String("u", "", "Update profile info")
 	versionPtr := flag.Bool("version", false, "Display the version")
+
+	// NIP-89 related flags
+	registerHandlerPtr := flag.String("register-handler", "", "Register as handler for kinds (comma-separated)")
+	platformPtr := flag.String("platform", "web", "Platform for handler (web, ios, android)")
+	urlTemplatePtr := flag.String("url-template", "", "URL template for handler (e.g. https://example.com/e/<bech32>)")
+	recommendPtr := flag.String("recommend", "", "Recommend an app for a kind (format: pubkey:d-identifier:kind)")
+	findHandlersPtr := flag.Int("find-handlers", 0, "Find handlers for a specific kind")
+
 	flag.Parse()
 
 	// Handle version flag
@@ -433,6 +588,100 @@ func main() {
 	pk, err := nostr.GetPublicKey(sk)
 	if err != nil {
 		log.Fatalf("Failed to derive public key: %v", err)
+	}
+
+	// Handle NIP-89 register-handler command
+	if *registerHandlerPtr != "" {
+		kindStrs := strings.Split(*registerHandlerPtr, ",")
+		var kinds []int
+		for _, kindStr := range kindStrs {
+			kind, err := strconv.Atoi(strings.TrimSpace(kindStr))
+			if err != nil {
+				log.Fatalf("Invalid kind: %s", kindStr)
+			}
+			kinds = append(kinds, kind)
+		}
+
+		if *urlTemplatePtr == "" {
+			log.Fatalf("URL template is required for handler registration")
+		}
+
+		platforms := map[string]string{
+			*platformPtr: *urlTemplatePtr,
+		}
+
+		err := withLoading("Registering handler", func() error {
+			return registerAsHandler(sk, pk, kinds, platforms)
+		})
+		if err != nil {
+			log.Fatalf("Failed to register handler: %v", err)
+		}
+		return
+	}
+
+	// Handle NIP-89 recommend command
+	if *recommendPtr != "" {
+		parts := strings.Split(*recommendPtr, ":")
+		if len(parts) != 3 {
+			log.Fatalf("Invalid recommend format. Use: pubkey:d-identifier:kind")
+		}
+
+		handlerPubKey := parts[0]
+		handlerDIdentifier := parts[1]
+		kind, err := strconv.Atoi(parts[2])
+		if err != nil {
+			log.Fatalf("Invalid kind: %s", parts[2])
+		}
+
+		relayHint := ""
+		if *relaysPtr != "" {
+			relays := strings.Split(*relaysPtr, ",")
+			relayHint = strings.TrimSpace(relays[0])
+		} else {
+			relayList := getRelayList()
+			if len(relayList) > 0 {
+				relayHint = relayList[0]
+			}
+		}
+
+		err = withLoading("Publishing recommendation", func() error {
+			return recommendApp(sk, pk, handlerPubKey, handlerDIdentifier, kind, relayHint, *platformPtr)
+		})
+		if err != nil {
+			log.Fatalf("Failed to publish recommendation: %v", err)
+		}
+		return
+	}
+
+	// Handle NIP-89 find-handlers command
+	if *findHandlersPtr > 0 {
+		err := withLoading("Finding handlers", func() error {
+			handlers, err := findHandlers(*findHandlersPtr)
+			if err != nil {
+				return err
+			}
+
+			if len(handlers) == 0 {
+				fmt.Printf("No handlers found for kind %d\n", *findHandlersPtr)
+				return nil
+			}
+
+			fmt.Printf("Found %d handlers for kind %d:\n", len(handlers), *findHandlersPtr)
+			for i, handler := range handlers {
+				fmt.Printf("%d. PubKey: %s\n", i+1, handler.PubKey)
+				fmt.Printf("   Supported kinds: %v\n", handler.SupportedKinds)
+				fmt.Printf("   Platforms:\n")
+				for platform, url := range handler.Platforms {
+					fmt.Printf("     - %s: %s\n", platform, url)
+				}
+				fmt.Println()
+			}
+			return nil
+		})
+		if err != nil {
+			log.Fatalf("Failed to find handlers: %v", err)
+		}
+		return
 	}
 
 	relaysFromFile := getRelayList()
