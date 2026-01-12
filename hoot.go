@@ -6,7 +6,10 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
+	"hoot/tui"
 	"log"
+	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -16,6 +19,7 @@ import (
 	"time"
 
 	"github.com/nbd-wtf/go-nostr"
+	"github.com/nbd-wtf/go-nostr/nip04"
 	"github.com/nbd-wtf/go-nostr/nip19"
 	"golang.org/x/crypto/bcrypt"
 	"golang.org/x/crypto/nacl/secretbox"
@@ -174,8 +178,10 @@ func encryptKey(key []byte, password []byte) (*StoredKey, error) {
 
 func decryptKey(storedKey *StoredKey, password []byte) ([]byte, error) {
 	// Verify that the provided password matches the stored hash.
-	if err := checkPassword(storedKey.PasswordHash, string(password)); err != nil {
-		return nil, fmt.Errorf("password verification failed: %w", err)
+	if storedKey.PasswordHash != "" {
+		if err := checkPassword(storedKey.PasswordHash, string(password)); err != nil {
+			return nil, fmt.Errorf("password verification failed: %w", err)
+		}
 	}
 
 	// Derive encryption key from password and salt
@@ -514,6 +520,209 @@ func findHandlers(kind int) ([]struct {
 	return handlers, nil
 }
 
+func payInvoiceNWC(invoice string) error {
+	// 1. Get NWC URI
+	uriStr, err := getNWCURI()
+	if err != nil {
+		return fmt.Errorf("failed to get NWC URI (use -nwc to set it): %w", err)
+	}
+	// Parse URI: nostr+walletconnect://<pubkey>?relay=<relay>&secret=<secret>
+	u, err := url.Parse(uriStr)
+	if err != nil {
+		return fmt.Errorf("invalid NWC URI: %w", err)
+	}
+	if u.Scheme != "nostr+walletconnect" {
+		return fmt.Errorf("invalid scheme, expected nostr+walletconnect")
+	}
+
+	walletPubKey := u.Hostname() // authority is pubkey
+	relayURL := u.Query().Get("relay")
+	secret := u.Query().Get("secret")
+	if walletPubKey == "" || relayURL == "" || secret == "" {
+		return fmt.Errorf("incomplete NWC URI")
+	}
+
+	// 2. Connect to Relay
+	ctx := context.Background()
+	relay, err := nostr.RelayConnect(ctx, relayURL)
+	if err != nil {
+		return fmt.Errorf("failed to connect to NWC relay: %w", err)
+	}
+	defer relay.Close()
+
+	// 3. Prepare NWC Encrypted Content (NIP-04)
+	// Current standard for NWC is specific.
+	// Request: kind 23194
+	// Content: {"method": "pay_invoice", "params": {"invoice": "..."}} encrypted
+
+	requestPayload := map[string]interface{}{
+		"method": "pay_invoice",
+		"params": map[string]interface{}{
+			"invoice": invoice,
+		},
+	}
+	jsonPayload, _ := json.Marshal(requestPayload)
+
+	// Compute shared secret
+	ss, err := nip04.ComputeSharedSecret(walletPubKey, secret)
+	if err != nil {
+		return fmt.Errorf("failed to compute shared secret: %w", err)
+	}
+
+	encryptedContent, err := nip04.Encrypt(string(jsonPayload), ss)
+	if err != nil {
+		return fmt.Errorf("failed to encrypt request: %w", err)
+	}
+
+	// 4. Publish Request
+	pk, _ := nostr.GetPublicKey(secret)
+	event := nostr.Event{
+		PubKey:    pk,
+		CreatedAt: nostr.Timestamp(time.Now().Unix()),
+		Kind:      23194,
+		Tags:      nostr.Tags{{"p", walletPubKey}},
+		Content:   encryptedContent,
+	}
+	event.Sign(secret)
+
+	if err := relay.Publish(ctx, event); err != nil {
+		return fmt.Errorf("failed to publish request: %w", err)
+	}
+
+	//Ideally we should listen for response (kind 23195), but for simplicity:
+	fmt.Println("NWC Request sent! Payment should happen shortly.")
+	return nil
+}
+
+// NWC Helpers
+
+func saveNWCURI(uri string) error {
+	configDir := getConfigDir()
+	if err := os.MkdirAll(configDir, 0700); err != nil {
+		return err
+	}
+	path := filepath.Join(configDir, "nwc.txt")
+	return os.WriteFile(path, []byte(uri), 0600)
+}
+
+func getNWCURI() (string, error) {
+	configDir := getConfigDir()
+	path := filepath.Join(configDir, "nwc.txt")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(string(data)), nil
+}
+
+// resolveLud16 fetches the callback from a Lightning Address (username@domain)
+func resolveLud16(lud16 string) (string, error) {
+	parts := strings.Split(lud16, "@")
+	if len(parts) != 2 {
+		return "", fmt.Errorf("invalid lightning address format")
+	}
+	username, domain := parts[0], parts[1]
+	url := fmt.Sprintf("https://%s/.well-known/lnurlp/%s", domain, username)
+
+	resp, err := http.Get(url)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("lnurl request failed: %s", resp.Status)
+	}
+
+	var data struct {
+		Callback string `json:"callback"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&data); err != nil {
+		return "", err
+	}
+	return data.Callback, nil
+}
+
+func fetchLightningInvoice(callback string, amountSats int64) (string, error) {
+	// Amount in millisats
+	amountMillisats := amountSats * 1000
+
+	// Check if callback already has query params
+	separator := "?"
+	if strings.Contains(callback, "?") {
+		separator = "&"
+	}
+
+	url := fmt.Sprintf("%s%samount=%d", callback, separator, amountMillisats)
+	resp, err := http.Get(url)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+
+	var data struct {
+		PR string `json:"pr"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&data); err != nil {
+		return "", err
+	}
+	if data.PR == "" {
+		return "", fmt.Errorf("no payment request in response")
+	}
+	return data.PR, nil
+}
+
+func extractLud16(pubKey string, relays []string) (string, error) {
+	filter := nostr.Filter{
+		Authors: []string{pubKey},
+		Kinds:   []int{0},
+		Limit:   1,
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	var profileEvent *nostr.Event
+
+	// Poor man's pool query for single event
+	for _, url := range relays {
+		relay, err := nostr.RelayConnect(ctx, url)
+		if err != nil {
+			continue
+		}
+
+		ch, err := relay.QueryEvents(ctx, filter)
+		if err != nil {
+			relay.Close()
+			continue
+		}
+
+		for ev := range ch {
+			profileEvent = ev
+			break
+		}
+		relay.Close()
+		if profileEvent != nil {
+			break
+		}
+	}
+
+	if profileEvent == nil {
+		return "", fmt.Errorf("profile not found")
+	}
+
+	var profile struct {
+		LUD16 string `json:"lud16"`
+	}
+	if err := json.Unmarshal([]byte(profileEvent.Content), &profile); err != nil {
+		return "", err
+	}
+	if profile.LUD16 == "" {
+		return "", fmt.Errorf("user has no lightning address (lud16)")
+	}
+	return profile.LUD16, nil
+}
+
 func main() {
 	// Define command-line flags
 	messagePtr := flag.String("m", "", "Message to post (optional)")
@@ -524,6 +733,11 @@ func main() {
 	profilePtr := flag.Bool("p", false, "Retrieve and display profile info")
 	updatePtr := flag.String("u", "", "Update profile info")
 	versionPtr := flag.Bool("version", false, "Display the version")
+
+	// NWC / Tipping flags
+	nwcPtr := flag.String("nwc", "", "Set NWC URI for tipping")
+	tipPtr := flag.Int64("tip", 0, "Amount in sats to tip (requires -user)")
+	tipUserPtr := flag.String("user", "", "User to tip (npub or hex pubkey)")
 
 	// NIP-89 related flags
 	registerHandlerPtr := flag.String("register-handler", "", "Register as handler for kinds (comma-separated)")
@@ -540,14 +754,114 @@ func main() {
 		return
 	}
 
-	// Read encryption password without echoing
-	fmt.Print("Enter encryption password: ")
-	bytePassword, err := term.ReadPassword(int(syscall.Stdin))
-	if err != nil {
-		log.Fatalf("Error reading password: %v", err)
+	// Launch TUI if no flags provided
+	if flag.NFlag() == 0 && flag.NArg() == 0 {
+		if err := tui.Run(); err != nil {
+			log.Fatalf("TUI error: %v", err)
+		}
+		return
 	}
-	fmt.Println("") // newline after password input
-	password := string(bytePassword)
+
+	// Handle NWC setup
+	if *nwcPtr != "" {
+		if err := saveNWCURI(*nwcPtr); err != nil {
+			log.Fatalf("Failed to save NWC URI: %v", err)
+		}
+		fmt.Println("NWC URI saved successfully.")
+		return
+	}
+
+	// Handle Tipping
+	if *tipPtr > 0 {
+		if *tipUserPtr == "" {
+			log.Fatalf("Please specify a user to tip with -user")
+		}
+
+		target := *tipUserPtr
+		var hexPubKey string
+		var lud16 string
+
+		// Check if it is a lightning address
+		if strings.Contains(target, "@") {
+			lud16 = target
+		} else {
+			// Assume it's a pubkey (npub or hex)
+			if strings.HasPrefix(target, "npub") {
+				_, decoded, err := nip19.Decode(target)
+				if err != nil {
+					log.Fatalf("Invalid npub: %v", err)
+				}
+				hexPubKey = decoded.(string)
+			} else {
+				hexPubKey = target
+			}
+
+			// Resolve LUD16 from profile
+			fmt.Println("Resolving Lightning Address from Nostr profile...")
+			relays := getRelayList()
+			l, err := extractLud16(hexPubKey, relays)
+			if err != nil {
+				log.Fatalf("Could not find lightning address for user: %v", err)
+			}
+			lud16 = l
+		}
+
+		fmt.Printf("Found lightning address: %s\n", lud16)
+
+		// Resolve Callback
+		callback, err := resolveLud16(lud16)
+		if err != nil {
+			log.Fatalf("Failed to resolve lightning address: %v", err)
+		}
+
+		// Fetch Invoice
+		fmt.Printf("Fetching invoice for %d sats...\n", *tipPtr)
+		invoice, err := fetchLightningInvoice(callback, *tipPtr)
+		if err != nil {
+			log.Fatalf("Failed to fetch invoice: %v", err)
+		}
+
+		// Pay
+		fmt.Println("Paying invoice via NWC...")
+		if err := payInvoiceNWC(invoice); err != nil {
+			log.Fatalf("Payment failed: %v", err)
+		}
+		return
+	}
+
+	// Check if key exists
+	configDir := getConfigDir()
+	keyPath := filepath.Join(configDir, keyFileName)
+	_, err := os.Stat(keyPath)
+	keyExists := !os.IsNotExist(err)
+
+	// Interactive Login if no key found and no store flag
+	// Use flag.NFlag() == 0 to assume interactive mode if no flags provided
+	if !keyExists && !*storePtr && *messagePtr == "" && *updatePtr == "" && !*profilePtr && !*listPtr && *nwcPtr == "" && *tipPtr == 0 {
+		fmt.Println("No private key found.")
+		fmt.Print("Enter your Nostr private key (nsec) to login: ")
+		var input string
+		fmt.Scanln(&input)
+		if input != "" {
+			*keyPtr = strings.TrimSpace(input)
+			*storePtr = true
+			fmt.Println("You will now be asked to create a password to encrypt this key.")
+		}
+	}
+
+	// Read encryption password without echoing
+	// Check for password in environment variable first (for testing/automation)
+	password := os.Getenv("HOOT_PASSWORD")
+	if password == "" {
+		// Read encryption password without echoing
+		fmt.Print("Enter encryption password: ")
+		bytePassword, err := term.ReadPassword(int(syscall.Stdin))
+		if err != nil {
+			log.Fatalf("Error reading password: %v", err)
+		}
+		fmt.Println("") // newline after password input
+		password = string(bytePassword)
+	}
 
 	// Save a new key action with loading bar.
 	if *storePtr {
