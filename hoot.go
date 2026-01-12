@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
+	"hoot/nip46"
 	"hoot/tui"
 	"log"
 	"net/http"
@@ -37,7 +38,12 @@ var defaultRelays = []string{
 	"wss://relay.damus.io",
 	"wss://relay.nostr.band",
 	"wss://nostr.wine",
+	"wss://nostr.wine",
 }
+
+// Global NIP-46 session and local key
+var nip46Session *nip46.Session
+var localPrivateKey string
 
 // Updated StoredKey includes the password hash.
 type StoredKey struct {
@@ -301,6 +307,92 @@ func listPosts(pubKey string) {
 		fmt.Printf("Created: %s\nContent: %s\n\n",
 			time.Unix(int64(ev.CreatedAt), 0).Format(time.RFC1123), ev.Content)
 	}
+}
+
+// getFeedPosts returns posts from the global feed for TUI display
+func getFeedPosts() ([]tui.FeedPost, error) {
+	relays := getRelayList()
+	filter := nostr.Filter{
+		Kinds: []int{1},
+		Limit: 20,
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	var posts []tui.FeedPost
+	for _, url := range relays {
+		relay, err := nostr.RelayConnect(ctx, url)
+		if err != nil {
+			continue
+		}
+		evCh, err := relay.QueryEvents(ctx, filter)
+		if err != nil {
+			relay.Close()
+			continue
+		}
+		for ev := range evCh {
+			posts = append(posts, tui.FeedPost{
+				Author:    ev.PubKey,
+				Content:   ev.Content,
+				CreatedAt: time.Unix(int64(ev.CreatedAt), 0).Format("Jan 2 15:04"),
+			})
+			if len(posts) >= 20 {
+				break
+			}
+		}
+		relay.Close()
+		if len(posts) >= 20 {
+			break
+		}
+	}
+	return posts, nil
+}
+
+// publishPostTUI publishes a note using either NIP-46 or local key
+func publishPostTUI(content string) error {
+	var event nostr.Event
+	event.Kind = 1
+	event.Content = content
+	event.CreatedAt = nostr.Now()
+	event.Tags = nostr.Tags{}
+
+	relays := getRelayList()
+
+	// If NIP-46 session is active, use it
+	if nip46Session != nil {
+		event.PubKey = nip46Session.UserPublicKey
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		if err := nip46Session.SignEvent(ctx, &event); err != nil {
+			return fmt.Errorf("remote signing failed: %w", err)
+		}
+	} else {
+		// Use local key
+		if localPrivateKey == "" {
+			return fmt.Errorf("no active session or local key")
+		}
+		event.PubKey, _ = nostr.GetPublicKey(localPrivateKey)
+		event.Sign(localPrivateKey)
+	}
+
+	success := 0
+	for _, url := range relays {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		relay, err := nostr.RelayConnect(ctx, url)
+		if err != nil {
+			continue
+		}
+		if err := relay.Publish(ctx, event); err == nil {
+			success++
+		}
+		relay.Close()
+	}
+
+	if success == 0 {
+		return fmt.Errorf("failed to publish to any relay")
+	}
+	return nil
 }
 
 // getProfile queries for a kind 0 (profile) event.
@@ -756,7 +848,110 @@ func main() {
 
 	// Launch TUI if no flags provided
 	if flag.NFlag() == 0 && flag.NArg() == 0 {
-		if err := tui.Run(); err != nil {
+		cfg := tui.Config{
+			HasKey: func() bool {
+				configDir := getConfigDir()
+				keyPath := filepath.Join(configDir, keyFileName)
+				_, err := os.Stat(keyPath)
+				return !os.IsNotExist(err)
+			},
+			OnLoadKey: func(password string) (string, string, error) {
+				privKey, err := loadKey([]byte(password))
+				if err != nil {
+					return "", "", err
+				}
+				var sk string
+				if strings.HasPrefix(privKey, "nsec") {
+					_, decoded, err := nip19.Decode(privKey)
+					if err != nil {
+						return "", "", err
+					}
+					sk = decoded.(string)
+				} else {
+					sk = privKey
+				}
+				pk, err := nostr.GetPublicKey(sk)
+				if err != nil {
+					return "", "", err
+				}
+				// Cache for posting
+				localPrivateKey = sk
+				return sk, pk, nil
+			},
+			OnResetKey: func() error {
+				configDir := getConfigDir()
+				keyPath := filepath.Join(configDir, keyFileName)
+				return os.Remove(keyPath)
+			},
+			OnLogin: func(nsec string, password string, save bool) (string, error) {
+				_, decoded, err := nip19.Decode(nsec)
+				if err != nil {
+					return "", err
+				}
+				sk := decoded.(string)
+				pk, err := nostr.GetPublicKey(sk)
+				if err != nil {
+					return "", err
+				}
+
+				if save {
+					if err := saveKey(sk, []byte(password)); err != nil {
+						return "", err
+					}
+				}
+
+				// Cache for posting
+				localPrivateKey = sk
+				return pk, nil
+			},
+			OnPost:     publishPostTUI,
+			OnLoadFeed: getFeedPosts,
+			OnLoadRelays: func() ([]string, error) {
+				return loadRelays() // Uses existing helper
+			},
+			OnSaveRelays: func(relays []string) error {
+				configDir := getConfigDir()
+				relayPath := filepath.Join(configDir, "relays.txt")
+				// Ensure directory exists
+				if err := os.MkdirAll(configDir, 0700); err != nil {
+					return err
+				}
+				data := strings.Join(relays, "\n")
+				return os.WriteFile(relayPath, []byte(data), 0600)
+			},
+			OnInitQR: func() (string, error) {
+				// Initialize NIP-46 session
+				relays := getRelayList()
+				relayURL := relays[0] // Use first configured relay
+				uri, session, err := nip46.GenerateConnectURI(relayURL, "Hoot")
+				if err != nil {
+					return "", err
+				}
+				nip46Session = session
+				return uri, nil
+			},
+			OnCheckQR: func() (string, error) {
+				if nip46Session == nil {
+					return "", fmt.Errorf("session not initialized")
+				}
+				// Wait for connection
+				ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+				defer cancel()
+
+				if err := nip46Session.WaitForConnection(ctx); err != nil {
+					return "", err
+				}
+
+				// Get public key
+				pubKey, err := nip46Session.GetPublicKey(ctx)
+				if err != nil {
+					return "", err
+				}
+
+				return pubKey, nil
+			},
+		}
+		if err := tui.Run(cfg); err != nil {
 			log.Fatalf("TUI error: %v", err)
 		}
 		return
