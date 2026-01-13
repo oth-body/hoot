@@ -557,17 +557,18 @@ func (m Model) viewLogin() string {
 		b.WriteString(m.textInput.View())
 	} else {
 		// No key scenarios
-		if m.cursor == 50 {
+		switch m.cursor {
+		case 50:
 			b.WriteString(menuStyle.Render("Enter your Nostr private key (nsec):"))
 			b.WriteString("\n\n")
 			b.WriteString(m.textInput.View())
-		} else if m.cursor == 100 {
+		case 100:
 			b.WriteString(menuStyle.Render("Secure your key with a password:"))
 			b.WriteString("\n")
 			b.WriteString(lipgloss.NewStyle().Foreground(lipgloss.Color("240")).Render("(Leave empty to use ephemeral session without saving)"))
 			b.WriteString("\n\n")
 			b.WriteString(m.textInput.View())
-		} else {
+		default:
 			b.WriteString(menuStyle.Render("Choose login method:"))
 			b.WriteString("\n\n")
 
