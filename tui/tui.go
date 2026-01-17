@@ -22,6 +22,7 @@ const (
 	ScreenFeed
 	ScreenTip
 	ScreenRelays
+	ScreenProfiles // New screen for profile management
 )
 
 // Styles
@@ -55,6 +56,13 @@ type FeedPost struct {
 	CreatedAt string
 }
 
+// ProfileInfo represents a profile for display in the TUI
+type ProfileInfo struct {
+	ID        string
+	Name      string
+	PublicKey string
+}
+
 // Model is the main TUI state
 type Model struct {
 	screen       Screen
@@ -63,6 +71,10 @@ type Model struct {
 	message      string
 	messageStyle lipgloss.Style
 
+	// Terminal size for centering
+	width  int
+	height int
+
 	// User state
 	loggedIn   bool
 	publicKey  string
@@ -70,6 +82,15 @@ type Model struct {
 
 	// Temporary implementation of nsec storage during login flow
 	tempNsec string
+	tempName string // profile name during creation
+
+	// Profile state
+	profiles           []ProfileInfo
+	selectedProfile    int    // index in profile list
+	currentProfileID   string // ID of logged-in profile
+	currentProfileName string
+	lastUsedProfileID  string
+	addingProfile      bool // true when creating new profile
 
 	// Feed state
 	feedPosts   []FeedPost
@@ -96,6 +117,12 @@ type Model struct {
 	onLoadRelays func() ([]string, error)
 	onSaveRelays func(relays []string) error
 	hasKey       func() bool
+
+	// Profile callbacks
+	onListProfiles  func() ([]ProfileInfo, string, error) // returns profiles + lastUsedID
+	onSelectProfile func(id, password string) (privKey, pubKey string, err error)
+	onAddProfile    func(name, nsec, password string) (pubKey string, err error)
+	onDeleteProfile func(id string) error
 }
 
 // NewModel creates a new TUI model
@@ -145,6 +172,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	var cmd tea.Cmd
 
 	switch msg := msg.(type) {
+	case tea.WindowSizeMsg:
+		m.width = msg.Width
+		m.height = msg.Height
+		return m, nil
+
 	case tea.KeyMsg:
 		switch msg.String() {
 		case "ctrl+c", "esc":
@@ -289,44 +321,90 @@ func (m Model) handleEnter() (tea.Model, tea.Cmd) {
 }
 
 func (m Model) handleLoginEnter() (tea.Model, tea.Cmd) {
-	hasExistingKey := m.hasKey != nil && m.hasKey()
+	hasProfiles := len(m.profiles) > 0
 
-	if hasExistingKey {
-		// User is entering password to unlock
-		password := m.textInput.Value()
-		if password == "" {
-			m.message = "Please enter your password"
-			m.messageStyle = errorStyle
-			return m, nil
-		}
-
-		if m.onLoadKey != nil {
-			privKey, pubKey, err := m.onLoadKey(password)
-			if err != nil {
-				m.message = fmt.Sprintf("Login failed: %v", err)
+	if hasProfiles && !m.addingProfile {
+		// Profile selection mode
+		switch m.cursor {
+		case 200: // Password entry for selected profile
+			password := m.textInput.Value()
+			if password == "" {
+				m.message = "Please enter your password"
 				m.messageStyle = errorStyle
 				return m, nil
 			}
-			m.privateKey = privKey
-			m.publicKey = pubKey
-			m.loggedIn = true
-			m.screen = ScreenHome
-			m.message = ""
-			m.textInput.Reset()
+
+			profile := m.profiles[m.selectedProfile]
+			if m.onSelectProfile != nil {
+				privKey, pubKey, err := m.onSelectProfile(profile.ID, password)
+				if err != nil {
+					m.message = fmt.Sprintf("Login failed: %v", err)
+					m.messageStyle = errorStyle
+					return m, nil
+				}
+				m.privateKey = privKey
+				m.publicKey = pubKey
+				m.currentProfileID = profile.ID
+				m.currentProfileName = profile.Name
+				m.loggedIn = true
+				m.screen = ScreenHome
+				m.message = ""
+				m.textInput.Reset()
+			}
+
+		default: // Profile list selection
+			addIdx := len(m.profiles)
+			qrIdx := len(m.profiles) + 1
+
+			if m.cursor < len(m.profiles) {
+				// Selected a profile - go to password entry
+				m.selectedProfile = m.cursor
+				m.cursor = 200
+				m.textInput.Placeholder = "Password..."
+				m.textInput.EchoMode = textinput.EchoPassword
+				m.textInput.Reset()
+				m.textInput.Focus()
+			} else if m.cursor == addIdx {
+				// Add new profile
+				m.addingProfile = true
+				m.cursor = 50 // Start with name entry
+				m.textInput.Placeholder = "Profile name..."
+				m.textInput.EchoMode = textinput.EchoNormal
+				m.textInput.Reset()
+				m.textInput.Focus()
+			} else if m.cursor == qrIdx {
+				// QR Code Login
+				m.screen = ScreenQRLogin
+				m.qrReady = false
+				m.message = "Generating QR code..."
+				return m, m.initQR
+			}
 		}
 	} else {
-		// No existing key logic
+		// No profiles or adding new profile
 		switch m.cursor {
 		case 0:
-			// "Enter Nostr private key" selected
-			m.cursor = 50 // Switch to Nsec Entry Mode
+			// "Create new profile" selected - start name entry
+			m.addingProfile = true
+			m.cursor = 50
+			m.textInput.Placeholder = "Profile name..."
+			m.textInput.EchoMode = textinput.EchoNormal
+			m.textInput.Reset()
+			m.textInput.Focus()
+
+		case 50: // Profile name entered
+			name := m.textInput.Value()
+			if name == "" {
+				name = "Default"
+			}
+			m.tempName = name
+			m.cursor = 51
 			m.textInput.Placeholder = "nsec1..."
 			m.textInput.EchoMode = textinput.EchoNormal
 			m.textInput.Reset()
 			m.textInput.Focus()
 
-		case 50:
-			// Nsec entered
+		case 51: // Nsec entered
 			nsec := m.textInput.Value()
 			if nsec == "" || !strings.HasPrefix(nsec, "nsec") {
 				m.message = "Please enter a valid nsec"
@@ -334,37 +412,43 @@ func (m Model) handleLoginEnter() (tea.Model, tea.Cmd) {
 				return m, nil
 			}
 			m.tempNsec = nsec
-
-			// Move to password creation (optional)
 			m.cursor = 100
-			m.textInput.Placeholder = "Enter password to save (or empty for ephemeral)"
+			m.textInput.Placeholder = "Password..."
 			m.textInput.EchoMode = textinput.EchoPassword
 			m.textInput.Reset()
-			m.message = "Enter password to encrypt & save key, or press Enter to skip saving."
-			m.messageStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("243")) // Gray
+			m.textInput.Focus()
+			m.message = ""
 
-		case 100:
-			// Password phase
+		case 100: // Password entered - create profile
 			password := m.textInput.Value()
-			save := password != ""
 
-			if m.onLogin != nil {
-				pubKey, err := m.onLogin(m.tempNsec, password, save)
+			if m.onAddProfile != nil {
+				pubKey, err := m.onAddProfile(m.tempName, m.tempNsec, password)
 				if err != nil {
-					m.message = fmt.Sprintf("Login failed: %v", err)
+					m.message = fmt.Sprintf("Failed to add profile: %v", err)
 					m.messageStyle = errorStyle
-					m.cursor = 0 // Reset to menu
+					m.cursor = 0
+					m.addingProfile = false
 					return m, nil
 				}
 				m.publicKey = pubKey
+				m.currentProfileName = m.tempName
+
+				// Reload profiles
+				if m.onListProfiles != nil {
+					profiles, lastUsed, _ := m.onListProfiles()
+					m.profiles = profiles
+					m.lastUsedProfileID = lastUsed
+				}
 			}
+
 			m.loggedIn = true
 			m.screen = ScreenHome
-			m.message = "Logged in!"
-			if !save {
-				m.message += " (Ephemeral Session)"
-			}
+			m.message = "Profile created and logged in!"
 			m.messageStyle = successStyle
+			m.addingProfile = false
+			m.tempName = ""
+			m.tempNsec = ""
 
 		case 1:
 			// QR Code Login selected
@@ -452,7 +536,19 @@ func (m Model) handleHomeEnter() (tea.Model, tea.Cmd) {
 				m.relays = relays
 			}
 		}
-	case 4: // Quit
+	case 4: // Switch Profile
+		// Go back to login screen to select a different profile
+		m.screen = ScreenLogin
+		m.loggedIn = false
+		m.cursor = 0
+		m.textInput.Reset()
+		// Reload profiles list
+		if m.onListProfiles != nil {
+			profiles, lastUsed, _ := m.onListProfiles()
+			m.profiles = profiles
+			m.lastUsedProfileID = lastUsed
+		}
+	case 5: // Quit
 		return m, tea.Quit
 	}
 	return m, nil
@@ -524,7 +620,6 @@ func (m Model) View() string {
 	case ScreenFeed:
 		b.WriteString(m.viewFeed())
 	case ScreenTip:
-
 		b.WriteString(m.viewTip())
 	case ScreenRelays:
 		b.WriteString(m.viewRelays())
@@ -536,7 +631,14 @@ func (m Model) View() string {
 
 	b.WriteString("\n\n" + menuStyle.Render("Press Esc to go back, Ctrl+C to quit"))
 
-	return b.String()
+	content := b.String()
+
+	// Center the content if we have terminal dimensions
+	if m.width > 0 && m.height > 0 {
+		return lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center, content)
+	}
+
+	return content
 }
 
 func (m Model) viewLogin() string {
@@ -545,45 +647,107 @@ func (m Model) viewLogin() string {
 	b.WriteString(titleStyle.Render("🦉 Welcome to Hoot!"))
 	b.WriteString("\n\n")
 
-	hasExistingKey := m.hasKey != nil && m.hasKey()
+	hasProfiles := len(m.profiles) > 0
 
-	if hasExistingKey {
-		b.WriteString(menuStyle.Render("Enter your password to unlock:"))
-		b.WriteString("\n")
-		b.WriteString(lipgloss.NewStyle().Foreground(lipgloss.Color("240")).Render("(Or press 'r' to reset/delete key)"))
-		b.WriteString("\n\n")
-		m.textInput.Placeholder = "Password..."
-		m.textInput.EchoMode = textinput.EchoPassword
-		b.WriteString(m.textInput.View())
-	} else {
-		// No key scenarios
+	if hasProfiles && !m.addingProfile {
+		// Profile selection mode
 		switch m.cursor {
-		case 50:
+		case 200: // Password entry for selected profile
+			profile := m.profiles[m.selectedProfile]
+			displayName := profile.Name
+			if displayName == "" {
+				displayName = "Default"
+			}
+			b.WriteString(menuStyle.Render(fmt.Sprintf("Unlock profile: %s", displayName)))
+			b.WriteString("\n\n")
+			b.WriteString(m.textInput.View())
+			b.WriteString("\n\n")
+			b.WriteString(lipgloss.NewStyle().Foreground(lipgloss.Color("240")).Render("Press Esc to go back"))
+		default: // Profile list
+			b.WriteString(menuStyle.Render("Select a profile:"))
+			b.WriteString("\n\n")
+
+			for i, profile := range m.profiles {
+				displayName := profile.Name
+				if displayName == "" {
+					displayName = "Default"
+				}
+				pubkeyShort := ""
+				if len(profile.PublicKey) > 8 {
+					pubkeyShort = profile.PublicKey[:8] + "..."
+				}
+
+				lastUsedMarker := ""
+				if profile.ID == m.lastUsedProfileID {
+					lastUsedMarker = " ★"
+				}
+
+				label := fmt.Sprintf("%s (%s)%s", displayName, pubkeyShort, lastUsedMarker)
+				if i == m.cursor {
+					b.WriteString(selectedStyle.Render(fmt.Sprintf("→ %s", label)))
+				} else {
+					b.WriteString(menuStyle.Render(fmt.Sprintf("  %s", label)))
+				}
+				b.WriteString("\n")
+			}
+
+			// Add new profile option
+			addIdx := len(m.profiles)
+			if m.cursor == addIdx {
+				b.WriteString(selectedStyle.Render("→ + Add new profile"))
+			} else {
+				b.WriteString(menuStyle.Render("  + Add new profile"))
+			}
+			b.WriteString("\n")
+
+			// QR Login option
+			qrIdx := len(m.profiles) + 1
+			if m.cursor == qrIdx {
+				b.WriteString(selectedStyle.Render("→ 📱 Scan QR with Amber"))
+			} else {
+				b.WriteString(menuStyle.Render("  📱 Scan QR with Amber"))
+			}
+			b.WriteString("\n")
+		}
+	} else {
+		// No profiles or adding new profile
+		switch m.cursor {
+		case 50: // Profile name entry
+			b.WriteString(menuStyle.Render("Enter a name for this profile:"))
+			b.WriteString("\n\n")
+			b.WriteString(m.textInput.View())
+		case 51: // Nsec entry
 			b.WriteString(menuStyle.Render("Enter your Nostr private key (nsec):"))
 			b.WriteString("\n\n")
 			b.WriteString(m.textInput.View())
-		case 100:
-			b.WriteString(menuStyle.Render("Secure your key with a password:"))
+		case 100: // Password entry
+			b.WriteString(menuStyle.Render("Create a password to protect this profile:"))
 			b.WriteString("\n")
-			b.WriteString(lipgloss.NewStyle().Foreground(lipgloss.Color("240")).Render("(Leave empty to use ephemeral session without saving)"))
+			b.WriteString(lipgloss.NewStyle().Foreground(lipgloss.Color("240")).Render("(Leave empty to skip saving)"))
 			b.WriteString("\n\n")
 			b.WriteString(m.textInput.View())
 		default:
-			b.WriteString(menuStyle.Render("Choose login method:"))
-			b.WriteString("\n\n")
+			if m.addingProfile {
+				b.WriteString(menuStyle.Render("Adding new profile..."))
+				b.WriteString("\n\n")
+				b.WriteString(menuStyle.Render("Press Enter to continue or Esc to cancel"))
+			} else {
+				b.WriteString(menuStyle.Render("No profiles yet. Let's create one!"))
+				b.WriteString("\n\n")
 
-			options := []string{
-				"Enter Nostr private key (nsec)",
-				"Scan QR with Amber (NIP-46)",
-			}
-
-			for i, opt := range options {
-				if i == m.cursor {
-					b.WriteString(selectedStyle.Render(fmt.Sprintf("→ %s", opt)))
-				} else {
-					b.WriteString(menuStyle.Render(fmt.Sprintf("  %s", opt)))
+				options := []string{
+					"Create new profile",
+					"Scan QR with Amber (NIP-46)",
 				}
-				b.WriteString("\n")
+
+				for i, opt := range options {
+					if i == m.cursor {
+						b.WriteString(selectedStyle.Render(fmt.Sprintf("→ %s", opt)))
+					} else {
+						b.WriteString(menuStyle.Render(fmt.Sprintf("  %s", opt)))
+					}
+					b.WriteString("\n")
+				}
 			}
 		}
 	}
@@ -611,7 +775,10 @@ func (m Model) viewHome() string {
 	var b strings.Builder
 
 	b.WriteString(titleStyle.Render("🦉 Hoot"))
-	if m.publicKey != "" {
+	// Show current profile name if set
+	if m.currentProfileName != "" {
+		b.WriteString(menuStyle.Render(fmt.Sprintf(" - %s", m.currentProfileName)))
+	} else if m.publicKey != "" && len(m.publicKey) >= 16 {
 		b.WriteString(menuStyle.Render(fmt.Sprintf(" - %s...", m.publicKey[:16])))
 	}
 	b.WriteString("\n\n")
@@ -619,9 +786,9 @@ func (m Model) viewHome() string {
 	menuItems := []string{
 		"[p] Post a message",
 		"[f] View feed",
-
 		"[t] Tip someone",
 		"[r] Manage Relays",
+		"[s] Switch Profile",
 		"[q] Quit",
 	}
 
@@ -766,6 +933,11 @@ type Config struct {
 	OnCheckQR    func() (string, error)
 	OnLoadRelays func() ([]string, error)
 	OnSaveRelays func(relays []string) error
+	// Profile callbacks
+	OnListProfiles  func() ([]ProfileInfo, string, error)
+	OnSelectProfile func(id, password string) (privKey, pubKey string, err error)
+	OnAddProfile    func(name, nsec, password string) (pubKey string, err error)
+	OnDeleteProfile func(id string) error
 }
 
 // Run starts the TUI with the given configuration
@@ -781,6 +953,27 @@ func Run(cfg Config) error {
 	m.onCheckQR = cfg.OnCheckQR
 	m.onLoadRelays = cfg.OnLoadRelays
 	m.onSaveRelays = cfg.OnSaveRelays
+	m.onListProfiles = cfg.OnListProfiles
+	m.onSelectProfile = cfg.OnSelectProfile
+	m.onAddProfile = cfg.OnAddProfile
+	m.onDeleteProfile = cfg.OnDeleteProfile
+
+	// Load profiles on startup
+	if m.onListProfiles != nil {
+		profiles, lastUsed, err := m.onListProfiles()
+		if err == nil {
+			m.profiles = profiles
+			m.lastUsedProfileID = lastUsed
+			// Find and select last used profile
+			for i, p := range profiles {
+				if p.ID == lastUsed {
+					m.selectedProfile = i
+					break
+				}
+			}
+		}
+	}
+
 	p := tea.NewProgram(m, tea.WithAltScreen())
 	_, err := p.Run()
 	return err
