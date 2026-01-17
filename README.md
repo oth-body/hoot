@@ -59,7 +59,7 @@ Create a `relays.txt` file  in:
 
 Example `relays.txt`:
 
-```
+```text
 wss://relay.damus.io
 wss://relay.nostr.band
 wss://nostr.wine
@@ -201,7 +201,7 @@ hoot -find-handlers 1
 ### All CLI Flags
 
 | Flag | Description |
-|------|-------------|
+| ---- | ----------- |
 | `-m "message"` | Post a message to Nostr |
 | `-k <key>` | Private key to store (use with `-s`) |
 | `-s` | Store a new private key |
@@ -224,5 +224,5 @@ hoot -find-handlers 1
 ### Environment Variables
 
 | Variable | Description |
-|----------|-------------|
+| -------- | ----------- |
 | `HOOT_PASSWORD` | Encryption password (for automation/scripting) |
