@@ -20,6 +20,8 @@ const (
 	ScreenHome
 	ScreenPost
 	ScreenFeed
+	ScreenDMs     // New screen for direct messages
+	ScreenReplies // New screen for replies/reactions
 	ScreenTip
 	ScreenRelays
 	ScreenProfiles // New screen for profile management
@@ -97,9 +99,21 @@ type Model struct {
 	feedLoading bool
 	feedScroll  int
 
+	// DMs state
+	dmPosts   []FeedPost
+	dmLoading bool
+	dmScroll  int
+
+	// Replies state
+	replyPosts   []FeedPost
+	replyLoading bool
+	replyScroll  int
+
 	// QR Login State
-	qrString string
-	qrReady  bool
+	qrData              string // Store URI instead of rendered string
+	qrRendered          string // Generated QR code based on current dimensions
+	qrReady             bool
+	qrNeedsRegeneration bool // Flag to regenerate on resize
 
 	// Relay State
 	relays        []string
@@ -107,16 +121,18 @@ type Model struct {
 	selectedRelay int  // index of selected relay
 
 	// Callbacks
-	onLogin      func(nsec string, password string, save bool) (string, error) // returns pubkey
-	onPost       func(message string) error
-	onLoadKey    func(password string) (privateKey string, pubkey string, err error)
-	onResetKey   func() error
-	onLoadFeed   func() ([]FeedPost, error)
-	onInitQR     func() (string, error)
-	onCheckQR    func() (string, error)
-	onLoadRelays func() ([]string, error)
-	onSaveRelays func(relays []string) error
-	hasKey       func() bool
+	onLogin       func(nsec string, password string, save bool) (string, error) // returns pubkey
+	onPost        func(message string) error
+	onLoadKey     func(password string) (privateKey string, pubkey string, err error)
+	onResetKey    func() error
+	onLoadFeed    func() ([]FeedPost, error)
+	onLoadDMs     func(privateKey string) ([]FeedPost, error)
+	onLoadReplies func(eventID string) ([]FeedPost, error)
+	onInitQR      func() (string, error)
+	onCheckQR     func() (string, error)
+	onLoadRelays  func() ([]string, error)
+	onSaveRelays  func(relays []string) error
+	hasKey        func() bool
 
 	// Profile callbacks
 	onListProfiles  func() ([]ProfileInfo, string, error) // returns profiles + lastUsedID
@@ -171,10 +187,23 @@ func (m Model) Init() tea.Cmd {
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	var cmd tea.Cmd
 
+	// Check if we need to regenerate the QR code
+	if m.qrNeedsRegeneration && m.qrData != "" {
+		m.regenerateQR()
+	}
+
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
+		widthChanged := m.width != msg.Width
+		heightChanged := m.height != msg.Height
 		m.width = msg.Width
 		m.height = msg.Height
+
+		// If window dimensions changed and we have QR data, mark for regeneration
+		if (widthChanged || heightChanged) && m.qrData != "" {
+			m.qrNeedsRegeneration = true
+		}
+
 		return m, nil
 
 	case tea.KeyMsg:
@@ -213,12 +242,23 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m.handleEnter()
 
 		case "up", "k":
-			if m.screen == ScreenFeed {
+			switch m.screen {
+			case ScreenFeed:
 				if m.feedScroll > 0 {
 					m.feedScroll--
 				}
-			} else if m.cursor > 0 {
-				m.cursor--
+			case ScreenDMs:
+				if m.dmScroll > 0 {
+					m.dmScroll--
+				}
+			case ScreenReplies:
+				if m.replyScroll > 0 {
+					m.replyScroll--
+				}
+			default:
+				if m.cursor > 0 {
+					m.cursor--
+				}
 			}
 
 		case "down", "j":
@@ -226,6 +266,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			case ScreenFeed:
 				if m.feedScroll < len(m.feedPosts)-4 {
 					m.feedScroll++
+				}
+			case ScreenDMs:
+				if m.dmScroll < len(m.dmPosts)-4 {
+					m.dmScroll++
+				}
+			case ScreenReplies:
+				if m.replyScroll < len(m.replyPosts)-4 {
+					m.replyScroll++
 				}
 			case ScreenLogin:
 				// Special handling for login menu
@@ -251,14 +299,15 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case qrGeneratedMsg:
-		m.qrString = msg.uri
+		m.qrData = msg.uri
+		m.qrNeedsRegeneration = true
 		m.qrReady = true
 		// Start checking for connection in background
 		return m, m.checkQRConnection
 	}
 
 	// Update text input
-	if (m.screen == ScreenLogin && (m.cursor == 50 || m.cursor == 100)) || m.screen == ScreenPost || m.screen == ScreenTip || (m.screen == ScreenRelays && m.addingRelay) {
+	if (m.screen == ScreenLogin && (m.cursor == 50 || m.cursor == 100)) || m.screen == ScreenPost || m.screen == ScreenTip || m.screen == ScreenReplies || (m.screen == ScreenRelays && m.addingRelay) {
 		// Only update input if we are in input mode (not menu selection mode)
 		// For Login: if hasKey (Input mode) OR if !hasKey and cursor=0 (Nsec Entry? No, cursor 0 is menu choice)
 		// Wait, if !hasKey:
@@ -287,7 +336,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				// If cursor is 100 (Password Entry) -> Input
 				// If cursor is 200 (Nsec Entry) -> Input (NEW STATE needed?)
 
-				// Let's refine handleLoginEnter to handle the state transitions.
+				// Let's refine handleLoginEnter to handle state transitions.
 				// Here, we only update textinput if we are in a state that needs it.
 				// If cursor == 100 (Password) or cursor == 0 AND we are in the "nsec entry" phase?
 				// The previous code reused cursor=0 for menu. This is confusing.
@@ -316,6 +365,8 @@ func (m Model) handleEnter() (tea.Model, tea.Cmd) {
 		return m.handleHomeEnter()
 	case ScreenPost:
 		return m.handlePostEnter()
+	case ScreenReplies:
+		return m.handleRepliesEnter()
 	}
 	return m, nil
 }
@@ -470,18 +521,37 @@ func (m Model) initQR() tea.Msg {
 		if err != nil {
 			return nil
 		}
-		var sb strings.Builder
-		config := qrterminal.Config{
-			Level:     qrterminal.M,
-			Writer:    &sb,
-			BlackChar: qrterminal.BLACK,
-			WhiteChar: qrterminal.WHITE,
-			QuietZone: 1,
-		}
-		qrterminal.GenerateWithConfig(uri, config)
-		return qrGeneratedMsg{uri: sb.String()}
+		return qrGeneratedMsg{uri: uri}
 	}
 	return nil
+}
+
+// regenerateQR generates the QR code based on current terminal dimensions
+func (m *Model) regenerateQR() {
+	if m.qrData == "" || m.width < 20 || m.height < 10 {
+		m.qrRendered = ""
+		return
+	}
+
+	var sb strings.Builder
+
+	// Adjust configuration based on available space
+	config := qrterminal.Config{
+		Level:     qrterminal.L, // Lower error correction for smaller QR
+		Writer:    &sb,
+		BlackChar: qrterminal.BLACK,
+		WhiteChar: qrterminal.WHITE,
+		QuietZone: 1, // Minimal quiet zone for space efficiency
+	}
+
+	// Use half-block characters for more compact display if terminal is small
+	if m.width < 50 || m.height < 25 {
+		config.HalfBlocks = true
+	}
+
+	qrterminal.GenerateWithConfig(m.qrData, config)
+	m.qrRendered = sb.String()
+	m.qrNeedsRegeneration = false
 }
 
 type qrGeneratedMsg struct {
@@ -521,12 +591,39 @@ func (m Model) handleHomeEnter() (tea.Model, tea.Cmd) {
 			}
 			m.feedLoading = false
 		}
-	case 2: // Tip
+	case 2: // DMs
+		m.screen = ScreenDMs
+		m.dmLoading = true
+		m.dmPosts = nil
+		m.dmScroll = 0
+		if m.onLoadDMs != nil && m.privateKey != "" {
+			posts, err := m.onLoadDMs(m.privateKey)
+			if err != nil {
+				m.message = fmt.Sprintf("Failed to load DMs: %v", err)
+				m.messageStyle = errorStyle
+			} else {
+				m.dmPosts = posts
+			}
+			m.dmLoading = false
+		} else {
+			m.message = "No private key available for decrypting DMs"
+			m.messageStyle = errorStyle
+			m.dmLoading = false
+		}
+	case 3: // Replies/Reactions
+		m.screen = ScreenReplies
+		m.replyLoading = true
+		m.replyPosts = nil
+		m.replyScroll = 0
+		m.textInput.Placeholder = "Enter event ID to view replies..."
+		m.textInput.Reset()
+		m.textInput.Focus()
+	case 4: // Tip
 		m.screen = ScreenTip
 		m.textInput.Placeholder = "Enter npub or lightning address..."
 		m.textInput.Reset()
 		m.textInput.Focus()
-	case 3: // Relays
+	case 5: // Relays
 		m.screen = ScreenRelays
 		m.addingRelay = false
 		m.selectedRelay = 0
@@ -536,7 +633,7 @@ func (m Model) handleHomeEnter() (tea.Model, tea.Cmd) {
 				m.relays = relays
 			}
 		}
-	case 4: // Switch Profile
+	case 6: // Switch Profile
 		// Go back to login screen to select a different profile
 		m.screen = ScreenLogin
 		m.loggedIn = false
@@ -548,7 +645,7 @@ func (m Model) handleHomeEnter() (tea.Model, tea.Cmd) {
 			m.profiles = profiles
 			m.lastUsedProfileID = lastUsed
 		}
-	case 5: // Quit
+	case 7: // Quit
 		return m, tea.Quit
 	}
 	return m, nil
@@ -605,6 +702,30 @@ func (m Model) handlePostEnter() (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
+func (m Model) handleRepliesEnter() (tea.Model, tea.Cmd) {
+	eventID := m.textInput.Value()
+	if eventID == "" {
+		m.message = "Please enter an event ID"
+		m.messageStyle = errorStyle
+		return m, nil
+	}
+
+	if m.onLoadReplies != nil {
+		replies, err := m.onLoadReplies(eventID)
+		if err != nil {
+			m.message = fmt.Sprintf("Failed to load replies: %v", err)
+			m.messageStyle = errorStyle
+		} else {
+			m.replyPosts = replies
+			m.replyLoading = false
+			m.replyScroll = 0
+		}
+	}
+
+	m.textInput.Reset()
+	return m, nil
+}
+
 func (m Model) View() string {
 	var b strings.Builder
 
@@ -619,6 +740,10 @@ func (m Model) View() string {
 		b.WriteString(m.viewPost())
 	case ScreenFeed:
 		b.WriteString(m.viewFeed())
+	case ScreenDMs:
+		b.WriteString(m.viewDMs())
+	case ScreenReplies:
+		b.WriteString(m.viewReplies())
 	case ScreenTip:
 		b.WriteString(m.viewTip())
 	case ScreenRelays:
@@ -633,7 +758,7 @@ func (m Model) View() string {
 
 	content := b.String()
 
-	// Center the content if we have terminal dimensions
+	// Center content if we have terminal dimensions
 	if m.width > 0 && m.height > 0 {
 		return lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center, content)
 	}
@@ -757,18 +882,45 @@ func (m Model) viewLogin() string {
 
 func (m Model) viewQRLogin() string {
 	var b strings.Builder
+
+	// Create content
 	b.WriteString(titleStyle.Render("📱 Scan with Amber"))
 	b.WriteString("\n\n")
 
-	if m.qrString != "" {
-		b.WriteString(m.qrString)
+	if m.qrRendered != "" {
+		b.WriteString(m.qrRendered)
 		b.WriteString("\n\n")
 		b.WriteString(menuStyle.Render("Waiting for connection... scan this with your Amber app."))
+	} else if m.qrData != "" {
+		b.WriteString(menuStyle.Render("Generating QR code..."))
 	} else {
 		b.WriteString(menuStyle.Render("Generating connection..."))
 	}
 
-	return b.String()
+	content := b.String()
+
+	// Center the content using lipgloss.Place if we have valid dimensions
+	if m.width > 0 && m.height > 0 {
+		// Create a style for the content box
+		contentStyle := lipgloss.NewStyle().
+			MaxWidth(m.width-4). // Leave margin
+			Padding(1, 2)        // Add padding
+
+		// Apply the style to content
+		styledContent := contentStyle.Render(content)
+
+		// Center the styled content
+		return lipgloss.Place(
+			m.height,
+			m.width,
+			lipgloss.Center,
+			lipgloss.Center,
+			styledContent,
+		)
+	}
+
+	// Fallback to non-centered content if dimensions aren't available
+	return content
 }
 
 func (m Model) viewHome() string {
@@ -786,6 +938,8 @@ func (m Model) viewHome() string {
 	menuItems := []string{
 		"[p] Post a message",
 		"[f] View feed",
+		"[d] View DMs",
+		"[e] View replies/reactions",
 		"[t] Tip someone",
 		"[r] Manage Relays",
 		"[s] Switch Profile",
@@ -878,6 +1032,126 @@ func (m Model) viewFeed() string {
 	return b.String()
 }
 
+func (m Model) viewDMs() string {
+	var b strings.Builder
+
+	b.WriteString(titleStyle.Render("🔒 Your Direct Messages"))
+	b.WriteString("\n\n")
+
+	if m.dmLoading {
+		b.WriteString(menuStyle.Render("Loading..."))
+		return b.String()
+	}
+
+	if len(m.dmPosts) == 0 {
+		b.WriteString(menuStyle.Render("No direct messages yet."))
+		return b.String()
+	}
+
+	postStyle := lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		Padding(0, 1).
+		MarginBottom(1).
+		Width(60)
+
+	authorStyle := lipgloss.NewStyle().
+		Foreground(lipgloss.Color("205")).
+		Bold(true)
+
+	timeStyle := lipgloss.NewStyle().
+		Foreground(lipgloss.Color("241"))
+
+	// Show up to 4 posts based on scroll
+	start := m.dmScroll
+	end := start + 4
+	if end > len(m.dmPosts) {
+		end = len(m.dmPosts)
+	}
+
+	for _, post := range m.dmPosts[start:end] {
+		authorDisplay := post.Author
+		if len(authorDisplay) > 16 {
+			authorDisplay = authorDisplay[:16] + "..."
+		}
+		header := authorStyle.Render(authorDisplay) + " " + timeStyle.Render(post.CreatedAt)
+		content := post.Content
+		if len(content) > 200 {
+			content = content[:200] + "..."
+		}
+		b.WriteString(postStyle.Render(header + "\n" + content))
+		b.WriteString("\n")
+	}
+
+	if len(m.dmPosts) > 4 {
+		b.WriteString(menuStyle.Render(fmt.Sprintf("Showing %d-%d of %d messages (↑/↓ to scroll)", start+1, end, len(m.dmPosts))))
+	}
+
+	return b.String()
+}
+
+func (m Model) viewReplies() string {
+	var b strings.Builder
+
+	b.WriteString(titleStyle.Render("💬 Replies & Reactions"))
+	b.WriteString("\n\n")
+
+	if m.replyLoading {
+		b.WriteString(menuStyle.Render("Loading..."))
+		return b.String()
+	}
+
+	if len(m.replyPosts) == 0 {
+		b.WriteString(menuStyle.Render("Enter an event ID to view replies/reactions"))
+		b.WriteString("\n\n")
+		b.WriteString(m.textInput.View())
+		return b.String()
+	}
+
+	postStyle := lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		Padding(0, 1).
+		MarginBottom(1).
+		Width(60)
+
+	authorStyle := lipgloss.NewStyle().
+		Foreground(lipgloss.Color("205")).
+		Bold(true)
+
+	timeStyle := lipgloss.NewStyle().
+		Foreground(lipgloss.Color("241"))
+
+	// Show up to 4 posts based on scroll
+	start := m.replyScroll
+	end := start + 4
+	if end > len(m.replyPosts) {
+		end = len(m.replyPosts)
+	}
+
+	for _, post := range m.replyPosts[start:end] {
+		authorDisplay := post.Author
+		if len(authorDisplay) > 16 {
+			authorDisplay = authorDisplay[:16] + "..."
+		}
+		header := authorStyle.Render(authorDisplay) + " " + timeStyle.Render(post.CreatedAt)
+		content := post.Content
+		if len(content) > 200 {
+			content = content[:200] + "..."
+		}
+		b.WriteString(postStyle.Render(header + "\n" + content))
+		b.WriteString("\n")
+	}
+
+	if len(m.replyPosts) > 4 {
+		b.WriteString(menuStyle.Render(fmt.Sprintf("Showing %d-%d of %d replies (↑/↓ to scroll)", start+1, end, len(m.replyPosts))))
+	}
+	b.WriteString("\n")
+	b.WriteString(menuStyle.Render("[Enter new event ID to view more replies]"))
+	b.WriteString("\n")
+	b.WriteString(m.textInput.View())
+
+	return b.String()
+}
+
 func (m Model) viewTip() string {
 	var b strings.Builder
 
@@ -923,16 +1197,18 @@ func (m Model) viewRelays() string {
 
 // Config holds all the callbacks for TUI operations
 type Config struct {
-	HasKey       func() bool
-	OnLoadKey    func(password string) (privateKey string, pubkey string, err error)
-	OnResetKey   func() error
-	OnLogin      func(nsec string, password string, save bool) (string, error)
-	OnPost       func(message string) error
-	OnLoadFeed   func() ([]FeedPost, error)
-	OnInitQR     func() (string, error)
-	OnCheckQR    func() (string, error)
-	OnLoadRelays func() ([]string, error)
-	OnSaveRelays func(relays []string) error
+	HasKey        func() bool
+	OnLoadKey     func(password string) (privateKey string, pubkey string, err error)
+	OnResetKey    func() error
+	OnLogin       func(nsec string, password string, save bool) (string, error)
+	OnPost        func(message string) error
+	OnLoadFeed    func() ([]FeedPost, error)
+	OnLoadDMs     func(privateKey string) ([]FeedPost, error)
+	OnLoadReplies func(eventID string) ([]FeedPost, error)
+	OnInitQR      func() (string, error)
+	OnCheckQR     func() (string, error)
+	OnLoadRelays  func() ([]string, error)
+	OnSaveRelays  func(relays []string) error
 	// Profile callbacks
 	OnListProfiles  func() ([]ProfileInfo, string, error)
 	OnSelectProfile func(id, password string) (privKey, pubKey string, err error)
@@ -949,6 +1225,8 @@ func Run(cfg Config) error {
 	m.onLogin = cfg.OnLogin
 	m.onPost = cfg.OnPost
 	m.onLoadFeed = cfg.OnLoadFeed
+	m.onLoadDMs = cfg.OnLoadDMs
+	m.onLoadReplies = cfg.OnLoadReplies
 	m.onInitQR = cfg.OnInitQR
 	m.onCheckQR = cfg.OnCheckQR
 	m.onLoadRelays = cfg.OnLoadRelays

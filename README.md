@@ -10,6 +10,16 @@ A simple command-line tool for using the Nostr network. It keeps your keys safe,
 - List recent posts
 - Customizable relay list
 
+## Screenshots
+
+<p align="center">
+  <img src="assets/login.png" width="45%" />
+  <img src="assets/home.png" width="45%" />
+</p>
+<p align="center">
+  <img src="assets/feed.png" width="91%" />
+</p>
+
 ## Prerequisites
 
 - Go 1.19 or later
@@ -209,6 +219,8 @@ hoot -find-handlers 1
 | `-l` | List your last 4 posts |
 | `-p` | View your profile info |
 | `-u '{"name":"..."}` | Update profile with JSON |
+| `-dms` | View your direct messages |
+| `-replies "event-id"` | View replies/reactions for a specific event |
 | `-version` | Display version info |
 | `-nwc "uri"` | Set NWC URI for tipping |
 | `-tip <sats>` | Amount to tip (use with `-user`) |

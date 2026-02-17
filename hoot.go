@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
+	"hoot/cache"
 	"hoot/nip46"
 	"hoot/tui"
 	"log"
@@ -45,6 +46,9 @@ var defaultRelays = []string{
 // Global NIP-46 session and local key
 var nip46Session *nip46.Session
 var localPrivateKey string
+
+// Global cache instance for improved performance
+var eventCache *cache.Cache
 
 // Updated StoredKey includes the password hash.
 type StoredKey struct {
@@ -550,6 +554,13 @@ func listPosts(pubKey string) {
 
 // getFeedPosts returns posts from the global feed for TUI display
 func getFeedPosts() ([]tui.FeedPost, error) {
+	// Try to get cached events first
+	var cachedEvents []*nostr.Event
+	if eventCache != nil {
+		// Get the most recent cached events
+		cachedEvents, _ = eventCache.GetEventsByPubKey("", 1, 20)
+	}
+
 	relays := getRelayList()
 	filter := nostr.Filter{
 		Kinds: []int{1},
@@ -559,6 +570,21 @@ func getFeedPosts() ([]tui.FeedPost, error) {
 	defer cancel()
 
 	var posts []tui.FeedPost
+	var eventIDs = make(map[string]bool)
+
+	// First, add cached posts if available
+	for _, ev := range cachedEvents {
+		if !eventIDs[ev.ID] {
+			eventIDs[ev.ID] = true
+			posts = append(posts, tui.FeedPost{
+				Author:    ev.PubKey,
+				Content:   ev.Content,
+				CreatedAt: time.Unix(int64(ev.CreatedAt), 0).Format("Jan 2 15:04"),
+			})
+		}
+	}
+
+	// Query relays for fresh data
 	for _, url := range relays {
 		relay, err := nostr.RelayConnect(ctx, url)
 		if err != nil {
@@ -570,11 +596,19 @@ func getFeedPosts() ([]tui.FeedPost, error) {
 			continue
 		}
 		for ev := range evCh {
-			posts = append(posts, tui.FeedPost{
-				Author:    ev.PubKey,
-				Content:   ev.Content,
-				CreatedAt: time.Unix(int64(ev.CreatedAt), 0).Format("Jan 2 15:04"),
-			})
+			// Cache the event for future use (24 hour TTL)
+			if eventCache != nil {
+				eventCache.StoreEvent(ev, 24*time.Hour)
+			}
+
+			if !eventIDs[ev.ID] {
+				eventIDs[ev.ID] = true
+				posts = append(posts, tui.FeedPost{
+					Author:    ev.PubKey,
+					Content:   ev.Content,
+					CreatedAt: time.Unix(int64(ev.CreatedAt), 0).Format("Jan 2 15:04"),
+				})
+			}
 			if len(posts) >= 20 {
 				break
 			}
@@ -585,6 +619,138 @@ func getFeedPosts() ([]tui.FeedPost, error) {
 		}
 	}
 	return posts, nil
+}
+
+// getDMs returns direct messages for TUI display
+func getDMs(privateKey string) ([]tui.FeedPost, error) {
+	// Derive public key from private key
+	publicKey, err := nostr.GetPublicKey(privateKey)
+	if err != nil {
+		return nil, fmt.Errorf("failed to derive public key: %w", err)
+	}
+
+	relays := getRelayList()
+	filter := nostr.Filter{
+		Kinds: []int{4}, // DMs are kind 4
+		Limit: 50,
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+
+	var dms []tui.FeedPost
+	for _, url := range relays {
+		relay, err := nostr.RelayConnect(ctx, url)
+		if err != nil {
+			continue
+		}
+
+		evCh, err := relay.QueryEvents(ctx, filter)
+		if err != nil {
+			relay.Close()
+			continue
+		}
+
+		for ev := range evCh {
+			// Check if this DM is for us or from us
+			isForUs := false
+			isFromUs := ev.PubKey == publicKey
+
+			for _, tag := range ev.Tags {
+				if len(tag) > 1 && tag[0] == "p" && tag[1] == publicKey {
+					isForUs = true
+					break
+				}
+			}
+
+			if !isForUs && !isFromUs {
+				continue // Skip messages not involving us
+			}
+
+			// Decrypt the DM content
+			decrypted, err := nip04.Decrypt(ev.Content, []byte(privateKey))
+			if err != nil {
+				continue // Skip if we can't decrypt
+			}
+
+			direction := "from"
+			if isFromUs {
+				if recipient := ev.Tags.GetFirst([]string{"p"}); recipient != nil && len(*recipient) > 1 {
+					direction = fmt.Sprintf("to %s", (*recipient)[1][:8]+"...")
+				}
+			} else {
+				direction = "from"
+			}
+
+			dms = append(dms, tui.FeedPost{
+				Author:    ev.PubKey,
+				Content:   fmt.Sprintf("[DM %s]: %s", direction, decrypted),
+				CreatedAt: time.Unix(int64(ev.CreatedAt), 0).Format("Jan 2 15:04"),
+			})
+
+			if len(dms) >= 50 {
+				break
+			}
+		}
+		relay.Close()
+		if len(dms) >= 50 {
+			break
+		}
+	}
+
+	return dms, nil
+}
+
+// getReactions returns reactions/replies to a specific event
+func getReactions(eventID string) ([]tui.FeedPost, error) {
+	relays := getRelayList()
+	filter := nostr.Filter{
+		Kinds: []int{7, 1}, // Reactions (7) and replies (1)
+		Tags:  nostr.TagMap{"e": []string{eventID}},
+		Limit: 20,
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	var reactions []tui.FeedPost
+	for _, url := range relays {
+		relay, err := nostr.RelayConnect(ctx, url)
+		if err != nil {
+			continue
+		}
+
+		evCh, err := relay.QueryEvents(ctx, filter)
+		if err != nil {
+			relay.Close()
+			continue
+		}
+
+		for ev := range evCh {
+			var content string
+			if ev.Kind == 7 {
+				// Reaction
+				content = fmt.Sprintf("[Reacted: %s]", ev.Content)
+			} else {
+				// Reply
+				content = ev.Content
+			}
+
+			reactions = append(reactions, tui.FeedPost{
+				Author:    ev.PubKey,
+				Content:   content,
+				CreatedAt: time.Unix(int64(ev.CreatedAt), 0).Format("Jan 2 15:04"),
+			})
+
+			if len(reactions) >= 20 {
+				break
+			}
+		}
+		relay.Close()
+		if len(reactions) >= 20 {
+			break
+		}
+	}
+
+	return reactions, nil
 }
 
 // publishPostTUI publishes a note using either NIP-46 or local key
@@ -1055,6 +1221,17 @@ func extractLud16(pubKey string, relays []string) (string, error) {
 }
 
 func main() {
+	// Initialize cache for improved performance
+	configDir := getConfigDir()
+	eventCache, err := cache.New(configDir)
+	if err != nil {
+		log.Printf("Warning: failed to initialize cache: %v", err)
+	} else {
+		defer eventCache.Close()
+		// Start periodic cleanup every hour
+		eventCache.StartCleanup(1 * time.Hour)
+	}
+
 	// Define command-line flags
 	messagePtr := flag.String("m", "", "Message to post (optional)")
 	keyPtr := flag.String("k", "", "Private key to store (use with -s)")
@@ -1063,6 +1240,8 @@ func main() {
 	listPtr := flag.Bool("l", false, "List last 4 posts from your profile")
 	profilePtr := flag.Bool("p", false, "Retrieve and display profile info")
 	updatePtr := flag.String("u", "", "Update profile info")
+	dmsPtr := flag.Bool("dms", false, "View direct messages")
+	repliesPtr := flag.String("replies", "", "View replies/reactions for a specific event ID")
 	versionPtr := flag.Bool("version", false, "Display the version")
 
 	// NWC / Tipping flags
@@ -1148,8 +1327,10 @@ func main() {
 				localPrivateKey = sk
 				return pk, nil
 			},
-			OnPost:     publishPostTUI,
-			OnLoadFeed: getFeedPosts,
+			OnPost:        publishPostTUI,
+			OnLoadFeed:    getFeedPosts,
+			OnLoadDMs:     getDMs,
+			OnLoadReplies: getReactions,
 			OnLoadRelays: func() ([]string, error) {
 				return loadRelays() // Uses existing helper
 			},
@@ -1306,9 +1487,8 @@ func main() {
 	}
 
 	// Check if key exists
-	configDir := getConfigDir()
 	keyPath := filepath.Join(configDir, keyFileName)
-	_, err := os.Stat(keyPath)
+	_, err = os.Stat(keyPath)
 	keyExists := !os.IsNotExist(err)
 
 	// Interactive Login if no key found and no store flag
@@ -1496,6 +1676,44 @@ func main() {
 			listPosts(pk)
 			return nil
 		})
+		return
+	}
+
+	// Handle DMs action with loading.
+	if *dmsPtr {
+		_ = withLoading("Loading DMs", func() error {
+			dms, err := getDMs(sk)
+			if err != nil {
+				return fmt.Errorf("failed to load DMs: %w", err)
+			}
+			fmt.Println("Your recent direct messages:")
+			for _, dm := range dms {
+				fmt.Printf("%s (%s): %s\n\n", dm.Author[:16]+"...", dm.CreatedAt, dm.Content)
+			}
+			return nil
+		})
+		if err != nil {
+			log.Fatalf("Failed to load DMs: %v", err)
+		}
+		return
+	}
+
+	// Handle replies action with loading.
+	if *repliesPtr != "" {
+		_ = withLoading("Loading replies", func() error {
+			replies, err := getReactions(*repliesPtr)
+			if err != nil {
+				return fmt.Errorf("failed to load replies: %w", err)
+			}
+			fmt.Printf("Replies and reactions to event %s:\n", *repliesPtr)
+			for _, reply := range replies {
+				fmt.Printf("%s (%s): %s\n\n", reply.Author[:16]+"...", reply.CreatedAt, reply.Content)
+			}
+			return nil
+		})
+		if err != nil {
+			log.Fatalf("Failed to load replies: %v", err)
+		}
 		return
 	}
 

@@ -261,3 +261,41 @@ func TestNWCParsing(t *testing.T) {
 		t.Errorf("Expected success message, got: %s", output)
 	}
 }
+
+func TestDMAndReplyFlags(t *testing.T) {
+	tempDir, err := os.MkdirTemp("", "hoot-test-config")
+	if err != nil {
+		t.Fatalf("Failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tempDir)
+
+	env := map[string]string{}
+	if runtime.GOOS == "windows" {
+		env["APPDATA"] = tempDir
+	} else {
+		env["HOME"] = tempDir
+		env["XDG_CONFIG_HOME"] = tempDir
+	}
+
+	// Generate and store key
+	sk := nostr.GeneratePrivateKey()
+	testKey, _ := nip19.EncodePrivateKey(sk)
+	_, err = runHoot(t, env, "-s", "-k", testKey)
+	if err != nil {
+		t.Fatalf("Failed to setup key: %v", err)
+	}
+
+	// Test DMs flag
+	output, err := runHoot(t, env, "-dms")
+	// Should attempt to load DMs
+	if !strings.Contains(output, "Loading DMs") && !strings.Contains(output, "Your recent direct messages") {
+		t.Errorf("Expected DM loading attempt. Output: %s", output)
+	}
+
+	// Test replies flag
+	output, err = runHoot(t, env, "-replies", "test123")
+	// Should attempt to load replies
+	if !strings.Contains(output, "Loading replies") && !strings.Contains(output, "Replies and reactions to event") {
+		t.Errorf("Expected reply loading attempt. Output: %s", output)
+	}
+}
