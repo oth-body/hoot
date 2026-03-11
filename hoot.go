@@ -34,6 +34,10 @@ const (
 	keyFileName      = "nostr_key.enc"
 	profilesFileName = "profiles.json"
 	version          = "0.0.4" // Define the version here
+
+	// Tip validation constants
+	minTipSats int64 = 1     // Minimum 1 sat
+	maxTipSats int64 = 100000 // Maximum 100k sats (~$50-100 USD)
 )
 
 var defaultRelays = []string{
@@ -1438,6 +1442,14 @@ func main() {
 
 	// Handle Tipping
 	if *tipPtr > 0 {
+		// Validate tip amount
+		if *tipPtr < minTipSats {
+			log.Fatalf("Tip amount too small: minimum is %d sat(s)", minTipSats)
+		}
+		if *tipPtr > maxTipSats {
+			log.Fatalf("Tip amount too large: maximum is %d sat(s). For larger tips, please use your wallet directly.", maxTipSats)
+		}
+
 		if *tipUserPtr == "" {
 			log.Fatalf("Please specify a user to tip with -user")
 		}
