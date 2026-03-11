@@ -511,7 +511,8 @@ func generateProfileID() string {
 }
 
 // listPosts queries posts (kind 1 events) and prints the last 4 posts.
-func listPosts(pubKey string) {
+// Returns an error if no posts were found or if all relay connections failed.
+func listPosts(pubKey string) error {
 	// Use relay list from file or default.
 	relays := getRelayList()
 	filter := nostr.Filter{
@@ -549,11 +550,17 @@ func listPosts(pubKey string) {
 			break
 		}
 	}
+
+	if len(events) == 0 {
+		return fmt.Errorf("no posts found or failed to connect to any relays")
+	}
+
 	fmt.Println("Last 4 posts from your profile:")
 	for _, ev := range events {
 		fmt.Printf("Created: %s\nContent: %s\n\n",
 			time.Unix(int64(ev.CreatedAt), 0).Format(time.RFC1123), ev.Content)
 	}
+	return nil
 }
 
 // getFeedPosts returns posts from the global feed for TUI display
@@ -810,7 +817,8 @@ func publishPostTUI(content string) error {
 }
 
 // getProfile queries for a kind 0 (profile) event.
-func getProfile(pubKey string) {
+// Returns an error if the profile is not found or if all relay connections failed.
+func getProfile(pubKey string) error {
 	// Use relay list from file or default.
 	relays := getRelayList()
 	filter := nostr.Filter{
@@ -843,12 +851,14 @@ func getProfile(pubKey string) {
 			break
 		}
 	}
+
 	if profileEvent == nil {
-		fmt.Println("Profile not found")
-		return
+		return fmt.Errorf("profile not found")
 	}
+
 	fmt.Println("Your profile:")
 	fmt.Println(profileEvent.Content)
+	return nil
 }
 
 // editProfile publishes a new kind 0 (profile) event with the updated profile info.
@@ -1684,8 +1694,7 @@ func main() {
 	// Check if a command was provided (e.g. "profile")
 	if flag.NArg() > 0 && flag.Arg(0) == "profile" {
 		_ = withLoading("Retrieving profile", func() error {
-			getProfile(pk)
-			return nil
+			return getProfile(pk)
 		})
 		return
 	}
@@ -1693,8 +1702,7 @@ func main() {
 	// Handle list posts action with loading.
 	if *listPtr {
 		_ = withLoading("Listing posts", func() error {
-			listPosts(pk)
-			return nil
+			return listPosts(pk)
 		})
 		return
 	}
@@ -1747,7 +1755,7 @@ func main() {
 	// Handle profile view action with loading.
 	if *profilePtr {
 		_ = withLoading("Retrieving profile", func() error {
-			getProfile(pk)
+			return getProfile(pk)
 			return nil
 		})
 		return
