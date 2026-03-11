@@ -148,9 +148,9 @@ func (c *Cache) StoreEvent(event *nostr.Event, ttl time.Duration) error {
 	}
 
 	cachedAt := time.Now()
-	var expiresAt *time.Time
+	var expiresAt *int64
 	if ttl > 0 {
-		exp := cachedAt.Add(ttl)
+		exp := cachedAt.Add(ttl).Unix()
 		expiresAt = &exp
 	}
 
@@ -250,9 +250,9 @@ func (c *Cache) GetEventsByPubKey(pubkey string, kind int, limit int) ([]*nostr.
 // StoreProfile stores profile metadata in the cache
 func (c *Cache) StoreProfile(pubkey string, name, about, picture, nip05 string, updatedAt int64, ttl time.Duration) error {
 	cachedAt := time.Now()
-	var expiresAt *time.Time
+	var expiresAt *int64
 	if ttl > 0 {
-		exp := cachedAt.Add(ttl)
+		exp := cachedAt.Add(ttl).Unix()
 		expiresAt = &exp
 	}
 
@@ -275,9 +275,10 @@ func (c *Cache) GetProfile(pubkey string) (*Profile, error) {
 		pubkey, time.Now().Unix())
 
 	var p Profile
+	var cachedAt int64
 	var expiresAt sql.NullInt64
 	err := row.Scan(&p.PubKey, &p.Name, &p.About, &p.Picture, &p.NIP05,
-		&p.UpdatedAt, &p.CachedAt, &expiresAt)
+		&p.UpdatedAt, &cachedAt, &expiresAt)
 
 	if err == sql.ErrNoRows {
 		return nil, nil
@@ -285,6 +286,8 @@ func (c *Cache) GetProfile(pubkey string) (*Profile, error) {
 	if err != nil {
 		return nil, err
 	}
+
+	p.CachedAt = time.Unix(cachedAt, 0)
 
 	if expiresAt.Valid {
 		expTime := time.Unix(expiresAt.Int64, 0)
@@ -321,8 +324,9 @@ func (c *Cache) GetRelayStats(url string) (*RelayStats, error) {
 
 	var rs RelayStats
 	var isActive int
+	var lastCheck int64
 	err := row.Scan(&rs.URL, &rs.AvgResponseTime, &rs.SuccessRate,
-		&rs.LastCheck, &isActive, &rs.TotalRequests, &rs.SuccessfulRequests)
+		&lastCheck, &isActive, &rs.TotalRequests, &rs.SuccessfulRequests)
 
 	if err == sql.ErrNoRows {
 		return nil, nil
@@ -331,6 +335,7 @@ func (c *Cache) GetRelayStats(url string) (*RelayStats, error) {
 		return nil, err
 	}
 
+	rs.LastCheck = time.Unix(lastCheck, 0)
 	rs.IsActive = isActive == 1
 	return &rs, nil
 }
@@ -351,11 +356,13 @@ func (c *Cache) GetActiveRelays() ([]*RelayStats, error) {
 	for rows.Next() {
 		var rs RelayStats
 		var isActive int
+		var lastCheck int64
 		err := rows.Scan(&rs.URL, &rs.AvgResponseTime, &rs.SuccessRate,
-			&rs.LastCheck, &isActive, &rs.TotalRequests, &rs.SuccessfulRequests)
+			&lastCheck, &isActive, &rs.TotalRequests, &rs.SuccessfulRequests)
 		if err != nil {
 			return nil, err
 		}
+		rs.LastCheck = time.Unix(lastCheck, 0)
 		rs.IsActive = isActive == 1
 		relays = append(relays, &rs)
 	}
