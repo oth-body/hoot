@@ -770,6 +770,7 @@ func getReactions(eventID string) ([]tui.FeedPost, error) {
 }
 
 // publishPostTUI publishes a note using either NIP-46 or local key
+// Returns error if publishing failed completely. Logs success details internally.
 func publishPostTUI(content string) error {
 	var event nostr.Event
 	event.Kind = 1
@@ -797,15 +798,20 @@ func publishPostTUI(content string) error {
 	}
 
 	success := 0
+	var failedRelays []string
 	for _, url := range relays {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 		relay, err := nostr.RelayConnect(ctx, url)
 		if err != nil {
+			failedRelays = append(failedRelays, url)
 			continue
 		}
+
 		if err := relay.Publish(ctx, event); err == nil {
 			success++
+		} else {
+			failedRelays = append(failedRelays, url)
 		}
 		relay.Close()
 	}
@@ -813,8 +819,17 @@ func publishPostTUI(content string) error {
 	if success == 0 {
 		return fmt.Errorf("failed to publish to any relay")
 	}
+
+	// Log success details for debugging
+	if len(failedRelays) > 0 {
+		log.Printf("Published to %d/%d relays. Failed: %v", success, len(relays), failedRelays)
+	} else {
+		log.Printf("Published successfully to all %d relays", success)
+	}
+
 	return nil
 }
+
 
 // getProfile queries for a kind 0 (profile) event.
 // Returns an error if the profile is not found or if all relay connections failed.
