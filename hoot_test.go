@@ -262,6 +262,100 @@ func TestNWCParsing(t *testing.T) {
 	}
 }
 
+// TestDefaultRelaysNoDuplicates verifies defaultRelays has no duplicate entries
+func TestDefaultRelaysNoDuplicates(t *testing.T) {
+	// We need to check the source file since defaultRelays is not exported
+	// Read the hoot.go file and check for duplicates in defaultRelays
+	data, err := os.ReadFile("hoot.go")
+	if err != nil {
+		t.Fatalf("Failed to read hoot.go: %v", err)
+	}
+
+	content := string(data)
+	lines := strings.Split(content, "\n")
+
+	// Find defaultRelays array
+	inRelays := false
+	var relays []string
+	for _, line := range lines {
+		if strings.Contains(line, "var defaultRelays = []string{") {
+			inRelays = true
+			continue
+		}
+		if inRelays {
+			if strings.Contains(line, "}") {
+				break
+			}
+			// Extract relay URL
+			relay := strings.TrimSpace(line)
+			relay = strings.Trim(relay, `"`)
+			relay = strings.TrimSuffix(relay, ",")
+			if relay != "" && strings.HasPrefix(relay, "wss://") {
+				relays = append(relays, relay)
+			}
+		}
+	}
+
+	// Check for duplicates
+	seen := make(map[string]bool)
+	for _, relay := range relays {
+		if seen[relay] {
+			t.Errorf("Duplicate relay found in defaultRelays: %s", relay)
+		}
+		seen[relay] = true
+	}
+
+	// Should have at least 3 relays
+	if len(relays) < 3 {
+		t.Errorf("Expected at least 3 default relays, got %d", len(relays))
+	}
+}
+
+// TestTipAmountValidation tests that tip amounts are validated
+func TestTipAmountValidation(t *testing.T) {
+	tempDir, err := os.MkdirTemp("", "hoot-test-tip")
+	if err != nil {
+		t.Fatalf("Failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tempDir)
+
+	env := map[string]string{}
+	if runtime.GOOS == "windows" {
+		env["APPDATA"] = tempDir
+	} else {
+		env["HOME"] = tempDir
+		env["XDG_CONFIG_HOME"] = tempDir
+	}
+
+	// Generate and store key
+	sk := nostr.GeneratePrivateKey()
+	testKey, _ := nip19.EncodePrivateKey(sk)
+	_, err = runHoot(t, env, "-s", "-k", testKey)
+	if err != nil {
+		t.Fatalf("Failed to setup key: %v", err)
+	}
+
+	// Test minimum tip (1 sat) - should work
+	// Note: This will fail at network level but should pass validation
+	output, _ := runHoot(t, env, "-tip", "1", "-user", "test@getalby.com")
+	// Should attempt to tip (validation passes, network fails)
+	if strings.Contains(output, "Minimum tip") {
+		t.Errorf("1 sat should be valid, got: %s", output)
+	}
+
+	// Test zero tip - should fail validation
+	output, _ = runHoot(t, env, "-tip", "0", "-user", "test@getalby.com")
+	// Zero tip should be ignored (no error, just no action)
+	if strings.Contains(output, "Paying") || strings.Contains(output, "Fetching") {
+		t.Errorf("0 sats should not trigger payment flow, got: %s", output)
+	}
+
+	// Test very large tip (should warn or fail)
+	output, _ = runHoot(t, env, "-tip", "999999999999", "-user", "test@getalby.com")
+	// This should either warn or proceed (depends on implementation)
+	t.Logf("Large tip output: %s", output)
+}
+
 func TestDMAndReplyFlags(t *testing.T) {
 	tempDir, err := os.MkdirTemp("", "hoot-test-config")
 	if err != nil {

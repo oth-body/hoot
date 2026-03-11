@@ -40,7 +40,7 @@ var defaultRelays = []string{
 	"wss://relay.damus.io",
 	"wss://relay.nostr.band",
 	"wss://nostr.wine",
-	"wss://nostr.wine",
+	"wss://relay.primal.net",
 }
 
 // Global NIP-46 session and local key
@@ -675,7 +675,12 @@ func getDMs(privateKey string) ([]tui.FeedPost, error) {
 			direction := "from"
 			if isFromUs {
 				if recipient := ev.Tags.GetFirst([]string{"p"}); recipient != nil && len(*recipient) > 1 {
-					direction = fmt.Sprintf("to %s", (*recipient)[1][:8]+"...")
+					pubKeyPart := (*recipient)[1]
+					if len(pubKeyPart) >= 8 {
+						direction = fmt.Sprintf("to %s", pubKeyPart[:8]+"...")
+					} else if len(pubKeyPart) > 0 {
+						direction = fmt.Sprintf("to %s", pubKeyPart)
+					}
 				}
 			} else {
 				direction = "from"
@@ -905,13 +910,14 @@ func registerAsHandler(privateKey, publicKey string, kinds []int, platforms map[
 			log.Printf("Failed to connect to relay %s: %v", relayURL, err)
 			continue
 		}
-		defer relay.Close()
 
 		if err := relay.Publish(ctx, event); err != nil {
 			log.Printf("Failed to publish to relay %s: %v", relay.URL, err)
 		} else {
 			fmt.Printf("Handler registration published to relay: %s\n", relay.URL)
 		}
+
+		relay.Close()
 	}
 	return nil
 }
@@ -945,13 +951,14 @@ func recommendApp(privateKey, publicKey, handlerPubKey, handlerDIdentifier strin
 			log.Printf("Failed to connect to relay %s: %v", relayURL, err)
 			continue
 		}
-		defer relay.Close()
 
 		if err := relay.Publish(ctx, event); err != nil {
 			log.Printf("Failed to publish to relay %s: %v", relay.URL, err)
 		} else {
 			fmt.Printf("App recommendation published to relay: %s\n", relay.URL)
 		}
+
+		relay.Close()
 	}
 	return nil
 }
@@ -983,11 +990,11 @@ func findHandlers(kind int) ([]struct {
 			log.Printf("Error connecting to relay %s: %v", url, err)
 			continue
 		}
-		defer relay.Close()
 
 		evCh, err := relay.QueryEvents(ctx, filter)
 		if err != nil {
 			log.Printf("Error querying relay %s: %v", url, err)
+			relay.Close()
 			continue
 		}
 
@@ -1013,6 +1020,7 @@ func findHandlers(kind int) ([]struct {
 			}
 			handlers = append(handlers, handler)
 		}
+		relay.Close()
 	}
 	return handlers, nil
 }
