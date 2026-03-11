@@ -1039,9 +1039,9 @@ func findHandlers(kind int) ([]struct {
 	return handlers, nil
 }
 
-func payInvoiceNWC(invoice string) error {
+func payInvoiceNWC(invoice string, password []byte) error {
 	// 1. Get NWC URI
-	uriStr, err := getNWCURI()
+	uriStr, err := getNWCURI(password)
 	if err != nil {
 		return fmt.Errorf("failed to get NWC URI (use -nwc to set it): %w", err)
 	}
@@ -1115,24 +1115,64 @@ func payInvoiceNWC(invoice string) error {
 
 // NWC Helpers
 
-func saveNWCURI(uri string) error {
+// NWC URI storage functions - encrypted for security
+
+func saveNWCURI(uri string, password []byte) error {
 	configDir := getConfigDir()
 	if err := os.MkdirAll(configDir, 0700); err != nil {
 		return err
 	}
-	path := filepath.Join(configDir, "nwc.txt")
-	return os.WriteFile(path, []byte(uri), 0600)
+
+	// Encrypt the URI using the same mechanism as private keys
+	storedKey, err := encryptKey([]byte(uri), password)
+	if err != nil {
+		return fmt.Errorf("failed to encrypt NWC URI: %w", err)
+	}
+
+	// Convert to JSON
+	jsonData, err := json.Marshal(storedKey)
+	if err != nil {
+		return err
+	}
+
+	// Save to encrypted file
+	path := filepath.Join(configDir, "nwc.enc")
+	return os.WriteFile(path, jsonData, 0600)
 }
 
-func getNWCURI() (string, error) {
+func getNWCURI(password []byte) (string, error) {
 	configDir := getConfigDir()
-	path := filepath.Join(configDir, "nwc.txt")
-	data, err := os.ReadFile(path)
+	
+	// Try encrypted file first
+	encPath := filepath.Join(configDir, "nwc.enc")
+	if _, err := os.Stat(encPath); err == nil {
+		jsonData, err := os.ReadFile(encPath)
+		if err != nil {
+			return "", err
+		}
+
+		var storedKey StoredKey
+		if err := json.Unmarshal(jsonData, &storedKey); err != nil {
+			return "", err
+		}
+
+		decrypted, err := decryptKey(&storedKey, password)
+		if err != nil {
+			return "", fmt.Errorf("failed to decrypt NWC URI: %w", err)
+		}
+
+		return string(decrypted), nil
+	}
+
+	// Fall back to legacy plaintext file for migration
+	txtPath := filepath.Join(configDir, "nwc.txt")
+	data, err := os.ReadFile(txtPath)
 	if err != nil {
 		return "", err
 	}
 	return strings.TrimSpace(string(data)), nil
 }
+
 
 // resolveLud16 fetches the callback from a Lightning Address (username@domain)
 func resolveLud16(lud16 string) (string, error) {
@@ -1441,12 +1481,26 @@ func main() {
 		return
 	}
 
+	// Read encryption password without echoing
+	// Check for password in environment variable first (for testing/automation)
+	password := os.Getenv("HOOT_PASSWORD")
+	if password == "" {
+		// Read encryption password without echoing
+		fmt.Print("Enter encryption password: ")
+		bytePassword, err := term.ReadPassword(int(syscall.Stdin))
+		if err != nil {
+			log.Fatalf("Error reading password: %v", err)
+		}
+		fmt.Println("") // newline after password input
+		password = string(bytePassword)
+	}
+
 	// Handle NWC setup
 	if *nwcPtr != "" {
-		if err := saveNWCURI(*nwcPtr); err != nil {
+		if err := saveNWCURI(*nwcPtr, []byte(password)); err != nil {
 			log.Fatalf("Failed to save NWC URI: %v", err)
 		}
-		fmt.Println("NWC URI saved successfully.")
+		fmt.Println("NWC URI saved successfully (encrypted).")
 		return
 	}
 
@@ -1510,7 +1564,7 @@ func main() {
 
 		// Pay
 		fmt.Println("Paying invoice via NWC...")
-		if err := payInvoiceNWC(invoice); err != nil {
+		if err := payInvoiceNWC(invoice, []byte(password)); err != nil {
 			log.Fatalf("Payment failed: %v", err)
 		}
 		return
@@ -1533,20 +1587,6 @@ func main() {
 			*storePtr = true
 			fmt.Println("You will now be asked to create a password to encrypt this key.")
 		}
-	}
-
-	// Read encryption password without echoing
-	// Check for password in environment variable first (for testing/automation)
-	password := os.Getenv("HOOT_PASSWORD")
-	if password == "" {
-		// Read encryption password without echoing
-		fmt.Print("Enter encryption password: ")
-		bytePassword, err := term.ReadPassword(int(syscall.Stdin))
-		if err != nil {
-			log.Fatalf("Error reading password: %v", err)
-		}
-		fmt.Println("") // newline after password input
-		password = string(bytePassword)
 	}
 
 	// Save a new key action with loading bar.
