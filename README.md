@@ -10,16 +10,6 @@ A simple command-line tool for using the Nostr network. It keeps your keys safe,
 - List recent posts
 - Customizable relay list
 
-## Screenshots
-
-<p align="center">
-  <img src="assets/login.png" width="45%" />
-  <img src="assets/home.png" width="45%" />
-</p>
-<p align="center">
-  <img src="assets/feed.png" width="91%" />
-</p>
-
 ## Prerequisites
 
 - Go 1.19 or later
