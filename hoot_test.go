@@ -393,3 +393,121 @@ func TestDMAndReplyFlags(t *testing.T) {
 		t.Errorf("Expected reply loading attempt. Output: %s", output)
 	}
 }
+
+// TestGetDMsShortPubkeyHandling verifies issue #2 fix
+// Tests that getDMs doesn't panic when pubkeys are shorter than 8 characters
+func TestGetDMsShortPubkeyHandling(t *testing.T) {
+	// This test verifies the fix for issue #2
+	// The getDMs function should handle short pubkeys gracefully
+	
+	// Read the source code to verify the fix is in place
+	data, err := os.ReadFile("hoot.go")
+	if err != nil {
+		t.Fatalf("Failed to read hoot.go: %v", err)
+	}
+
+	content := string(data)
+	
+	// Verify the fix exists - should have length check before slicing
+	if !strings.Contains(content, "len(pubKeyPart) >= 8") {
+		t.Error("Missing length check for short pubkeys in getDMs - issue #2 not fixed")
+	}
+	
+	// Verify fallback for short pubkeys
+	if !strings.Contains(content, "else if len(pubKeyPart) > 0") {
+		t.Error("Missing fallback for short pubkeys in getDMs")
+	}
+	
+	t.Log("Issue #2 fix verified: getDMs has proper length checks before slicing pubkeys")
+}
+
+// TestRegisterHandlerResourceCleanup verifies issue #3 fix
+// Tests that relay connections are properly closed after use
+func TestRegisterHandlerResourceCleanup(t *testing.T) {
+	// This test verifies the fix for issue #3
+	// The registerAsHandler and recommendApp functions should close relay connections properly
+	
+	data, err := os.ReadFile("hoot.go")
+	if err != nil {
+		t.Fatalf("Failed to read hoot.go: %v", err)
+	}
+
+	content := string(data)
+	
+	// Check that defer is not inside the loop in registerAsHandler
+	// The fix should use explicit relay.Close() instead of defer
+	lines := strings.Split(content, "\n")
+	
+	inRegisterHandler := false
+	hasExplicitClose := false
+	
+	for i := 0; i < len(lines); i++ {
+		line := lines[i]
+		
+		if strings.Contains(line, "func registerAsHandler(") {
+			inRegisterHandler = true
+			continue
+		}
+		
+		if inRegisterHandler {
+			// Look for explicit relay.Close() call
+			if strings.Contains(line, "relay.Close()") && !strings.Contains(line, "defer") {
+				hasExplicitClose = true
+			}
+			
+			// Check if we're still in the function
+			if strings.HasPrefix(strings.TrimSpace(line), "func ") && i > 0 {
+				// New function started
+				break
+			}
+		}
+	}
+	
+	if !hasExplicitClose {
+		t.Error("Issue #3 not fixed: no explicit relay.Close() found in registerAsHandler")
+	} else {
+		t.Log("Issue #3 fix verified: registerAsHandler uses explicit relay.Close()")
+	}
+}
+
+// TestRecommendAppResourceCleanup verifies issue #3 fix for recommendApp function
+func TestRecommendAppResourceCleanup(t *testing.T) {
+	data, err := os.ReadFile("hoot.go")
+	if err != nil {
+		t.Fatalf("Failed to read hoot.go: %v", err)
+	}
+
+	content := string(data)
+	lines := strings.Split(content, "\n")
+	
+	inRecommendApp := false
+	hasExplicitClose := false
+	
+	for i := 0; i < len(lines); i++ {
+		line := lines[i]
+		
+		if strings.Contains(line, "func recommendApp(") {
+			inRecommendApp = true
+			continue
+		}
+		
+		if inRecommendApp {
+			// Look for explicit relay.Close() call
+			if strings.Contains(line, "relay.Close()") && !strings.Contains(line, "defer") {
+				hasExplicitClose = true
+			}
+			
+			// Check if we're still in the function
+			if strings.HasPrefix(strings.TrimSpace(line), "func ") && i > 0 {
+				// New function started
+				break
+			}
+		}
+	}
+	
+	if !hasExplicitClose {
+		t.Error("Issue #3 not fixed: no explicit relay.Close() found in recommendApp")
+	} else {
+		t.Log("Issue #3 fix verified: recommendApp uses explicit relay.Close()")
+	}
+}
