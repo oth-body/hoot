@@ -1881,7 +1881,8 @@ func main() {
 				log.Printf("Failed to add relay %s: %v", relayURL, err)
 				continue
 			}
-			defer relay.Close()
+			// Don't defer here - let pool manage relay lifecycle
+			_ = relay // Relay is managed by pool
 		}
 		pool.Relays.Range(func(key string, relay *nostr.Relay) bool {
 			err := relay.Publish(ctx, event)
