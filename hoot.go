@@ -61,7 +61,26 @@ const (
 	// Max: reasonable future (year 2100)
 	timestampMin int64 = 1577836800  // 2020-01-01 00:00:00 UTC
 	timestampMax int64 = 4102444800  // 2100-01-01 00:00:00 UTC
+
+	// bcrypt cost range
+	bcryptCostMin = 4
+	bcryptCostMax = 31
 )
+
+// bcryptCost is the cost parameter for bcrypt password hashing.
+// Default is 10 (bcrypt.DefaultCost). Can be configured via HOOT_BCRYPT_COST env var.
+var bcryptCost = 10
+
+func init() {
+	if v := os.Getenv("HOOT_BCRYPT_COST"); v != "" {
+		if cost, err := strconv.Atoi(v); err == nil && cost >= bcryptCostMin && cost <= bcryptCostMax {
+			bcryptCost = cost
+		} else {
+			log.Printf("Invalid HOOT_BCRYPT_COST value %q: must be integer between %d and %d, using default %d",
+				v, bcryptCostMin, bcryptCostMax, bcryptCost)
+		}
+	}
+}
 
 // ValidateTimestamp checks if a nostr timestamp is within reasonable bounds
 // This prevents overflow issues and rejects obviously invalid timestamps
@@ -246,7 +265,7 @@ func withLoading(message string, fn func() error) error {
 
 // hashPassword creates a bcrypt hash of the given password.
 func hashPassword(password string) (string, error) {
-	hashedBytes, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
+	hashedBytes, err := bcrypt.GenerateFromPassword([]byte(password), bcryptCost)
 	if err != nil {
 		return "", err
 	}
