@@ -1679,6 +1679,83 @@ func runUpdateProfileCommand(sk, pk, updateJSON, relaysRaw string) error {
 	})
 }
 
+// runFindHandlersCommand finds and displays NIP-89 handlers for a kind.
+func runFindHandlersCommand(kind int) error {
+	return withLoading("Finding handlers", func() error {
+		handlers, err := findHandlers(kind)
+		if err != nil {
+			return err
+		}
+
+		if len(handlers) == 0 {
+			fmt.Printf("No handlers found for kind %d\n", kind)
+			return nil
+		}
+
+		fmt.Printf("Found %d handlers for kind %d:\n", len(handlers), kind)
+		for i, handler := range handlers {
+			fmt.Printf("%d. PubKey: %s\n", i+1, handler.PubKey)
+			fmt.Printf("   Supported kinds: %v\n", handler.SupportedKinds)
+			fmt.Printf("   Platforms:\n")
+			for platform, url := range handler.Platforms {
+				fmt.Printf("     - %s: %s\n", platform, url)
+			}
+			fmt.Println()
+		}
+		return nil
+	})
+}
+
+// readPassword reads the encryption password from env or terminal.
+func readPassword() (string, error) {
+	// Check for password in environment variable first (for testing/automation)
+	if password := os.Getenv("HOOT_PASSWORD"); password != "" {
+		return password, nil
+	}
+
+	// Read encryption password without echoing
+	fmt.Print("Enter encryption password: ")
+	bytePassword, err := term.ReadPassword(int(syscall.Stdin))
+	if err != nil {
+		return "", fmt.Errorf("error reading password: %w", err)
+	}
+	fmt.Println("") // newline after password input
+	return string(bytePassword), nil
+}
+
+// runNWCSetup saves an NWC URI for tipping.
+func runNWCSetup(nwcURI, password string) error {
+	if err := saveNWCURI(nwcURI, []byte(password)); err != nil {
+		return fmt.Errorf("failed to save NWC URI: %w", err)
+	}
+	fmt.Println("NWC URI saved successfully (encrypted).")
+	return nil
+}
+
+// runStoreKeyCommand stores a new private key.
+func runStoreKeyCommand(key, password string) error {
+	if key == "" {
+		return fmt.Errorf("must provide a private key with -k when using -s")
+	}
+	return withLoading("Storing key", func() error {
+		return saveKey(key, []byte(password))
+	})
+}
+
+// loadAndDecodeKey loads the encrypted key and decodes it to sk/pk.
+func loadAndDecodeKey(password string) (sk, pk string, err error) {
+	var privateKey string
+	if err := withLoading("Loading key", func() error {
+		var loadErr error
+		privateKey, loadErr = loadKey([]byte(password))
+		return loadErr
+	}); err != nil {
+		return "", "", fmt.Errorf("failed to load private key: %w", err)
+	}
+
+	return decodePrivateKey(privateKey)
+}
+
 func main() {
 	// Initialize cache for improved performance
 	configDir := getConfigDir()
@@ -1880,25 +1957,16 @@ func main() {
 	}
 
 	// Read encryption password without echoing
-	// Check for password in environment variable first (for testing/automation)
-	password := os.Getenv("HOOT_PASSWORD")
-	if password == "" {
-		// Read encryption password without echoing
-		fmt.Print("Enter encryption password: ")
-		bytePassword, err := term.ReadPassword(int(syscall.Stdin))
-		if err != nil {
-			log.Fatalf("Error reading password: %v", err)
-		}
-		fmt.Println("") // newline after password input
-		password = string(bytePassword)
+	password, err := readPassword()
+	if err != nil {
+		log.Fatalf("%v", err)
 	}
 
 	// Handle NWC setup
 	if *nwcPtr != "" {
-		if err := saveNWCURI(*nwcPtr, []byte(password)); err != nil {
-			log.Fatalf("Failed to save NWC URI: %v", err)
+		if err := runNWCSetup(*nwcPtr, password); err != nil {
+			log.Fatalf("%v", err)
 		}
-		fmt.Println("NWC URI saved successfully (encrypted).")
 		return
 	}
 
@@ -1931,30 +1999,14 @@ func main() {
 
 	// Save a new key action with loading bar.
 	if *storePtr {
-		if *keyPtr == "" {
-			fmt.Println("Error: Must provide a private key with -k when using -s")
-			os.Exit(1)
-		}
-		err := withLoading("Storing key", func() error {
-			return saveKey(*keyPtr, []byte(password))
-		})
-		if err != nil {
-			log.Fatalf("Failed to store key: %v", err)
+		if err := runStoreKeyCommand(*keyPtr, password); err != nil {
+			log.Fatalf("%v", err)
 		}
 		return
 	}
 
-	var privateKey string
-	if err := withLoading("Loading key", func() error {
-		var err error
-		privateKey, err = loadKey([]byte(password))
-		return err
-	}); err != nil {
-		log.Fatalf("Failed to load private key: %v", err)
-	}
-
-	// Decode private key and derive public key
-	sk, pk, err := decodePrivateKey(privateKey)
+	// Load and decode private key
+	sk, pk, err := loadAndDecodeKey(password)
 	if err != nil {
 		log.Fatalf("%v", err)
 	}
@@ -1977,31 +2029,8 @@ func main() {
 
 	// Handle NIP-89 find-handlers command
 	if *findHandlersPtr > 0 {
-		err := withLoading("Finding handlers", func() error {
-			handlers, err := findHandlers(*findHandlersPtr)
-			if err != nil {
-				return err
-			}
-
-			if len(handlers) == 0 {
-				fmt.Printf("No handlers found for kind %d\n", *findHandlersPtr)
-				return nil
-			}
-
-			fmt.Printf("Found %d handlers for kind %d:\n", len(handlers), *findHandlersPtr)
-			for i, handler := range handlers {
-				fmt.Printf("%d. PubKey: %s\n", i+1, handler.PubKey)
-				fmt.Printf("   Supported kinds: %v\n", handler.SupportedKinds)
-				fmt.Printf("   Platforms:\n")
-				for platform, url := range handler.Platforms {
-					fmt.Printf("     - %s: %s\n", platform, url)
-				}
-				fmt.Println()
-			}
-			return nil
-		})
-		if err != nil {
-			log.Fatalf("Failed to find handlers: %v", err)
+		if err := runFindHandlersCommand(*findHandlersPtr); err != nil {
+			log.Fatalf("%v", err)
 		}
 		return
 	}
