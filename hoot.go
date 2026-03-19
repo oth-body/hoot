@@ -38,6 +38,21 @@ const (
 	// Tip validation constants
 	minTipSats int64 = 1      // Minimum 1 sat
 	maxTipSats int64 = 100000 // Maximum 100k sats (~$50-100 USD)
+
+	// Post/feed limits
+	defaultPostLimit = 4  // Number of posts to fetch by default
+	feedPostLimit    = 20 // Number of posts in feed
+
+	// Spinner animation
+	spinnerDelayMs = 100 // Milliseconds between spinner frames
+
+	// Crypto parameters for key derivation
+	scryptN     = 32768 // CPU/memory cost parameter
+	scryptR     = 8     // Block size parameter
+	scryptP     = 1     // Parallelization parameter
+	keyLength   = 32    // Derived key length in bytes
+	saltLength  = 32    // Salt length in bytes
+	nonceLength = 24    // Nonce length in bytes
 )
 
 // TimeoutConfig holds configurable timeout values
@@ -158,7 +173,7 @@ func withLoading(message string, fn func() error) error {
 			default:
 				fmt.Printf("\r%s %c", message, spinner[i%len(spinner)])
 				i++
-				time.Sleep(100 * time.Millisecond)
+				time.Sleep(spinnerDelayMs * time.Millisecond)
 			}
 		}
 	}()
@@ -235,12 +250,12 @@ func getRelayList() []string {
 }
 
 func deriveKey(password []byte, salt []byte) ([]byte, error) {
-	return scrypt.Key(password, salt, 32768, 8, 1, 32)
+	return scrypt.Key(password, salt, scryptN, scryptR, scryptP, keyLength)
 }
 
 func encryptKey(key []byte, password []byte) (*StoredKey, error) {
-	// Generate 32 random bytes for salt.
-	salt := make([]byte, 32)
+	// Generate salt
+	salt := make([]byte, saltLength)
 	if _, err := rand.Read(salt); err != nil {
 		return nil, err
 	}
@@ -251,8 +266,8 @@ func encryptKey(key []byte, password []byte) (*StoredKey, error) {
 		return nil, err
 	}
 
-	// Generate 24 random bytes for nonce.
-	var nonce [24]byte
+	// Generate nonce
+	var nonce [nonceLength]byte
 	if _, err := rand.Read(nonce[:]); err != nil {
 		return nil, err
 	}
@@ -290,13 +305,13 @@ func decryptKey(storedKey *StoredKey, password []byte) ([]byte, error) {
 	}
 
 	// Prepare nonce and secret key
-	var nonce [24]byte
-	copy(nonce[:], storedKey.EncryptedKey[:24])
-	var secretKey [32]byte
-	copy(secretKey[:], derivedKey[:32])
+	var nonce [nonceLength]byte
+	copy(nonce[:], storedKey.EncryptedKey[:nonceLength])
+	var secretKey [keyLength]byte
+	copy(secretKey[:], derivedKey[:keyLength])
 
 	// Decrypt the key
-	decryptedKey, ok := secretbox.Open(nil, storedKey.EncryptedKey[24:], &nonce, &secretKey)
+	decryptedKey, ok := secretbox.Open(nil, storedKey.EncryptedKey[nonceLength:], &nonce, &secretKey)
 	if !ok {
 		return nil, fmt.Errorf("decryption failed")
 	}
@@ -578,7 +593,7 @@ func listPosts(pubKey string) error {
 	filter := nostr.Filter{
 		Authors: []string{pubKey},
 		Kinds:   []int{1},
-		Limit:   4,
+		Limit:   defaultPostLimit,
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), timeouts.Query)
 	defer cancel()
@@ -635,7 +650,7 @@ func getFeedPosts() ([]tui.FeedPost, error) {
 	relays := getRelayList()
 	filter := nostr.Filter{
 		Kinds: []int{1},
-		Limit: 20,
+		Limit: feedPostLimit,
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), timeouts.Query)
 	defer cancel()
@@ -782,7 +797,7 @@ func getReactions(eventID string) ([]tui.FeedPost, error) {
 	filter := nostr.Filter{
 		Kinds: []int{7, 1}, // Reactions (7) and replies (1)
 		Tags:  nostr.TagMap{"e": []string{eventID}},
-		Limit: 20,
+		Limit: feedPostLimit,
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), timeouts.Query)
 	defer cancel()
