@@ -1663,6 +1663,20 @@ func runRepliesCommand(eventID string) error {
 	})
 }
 
+// runListPostsCommand lists user's posts.
+func runListPostsCommand(pk string) error {
+	return withLoading("Listing posts", func() error {
+		return listPosts(pk)
+	})
+}
+
+// runProfileCommand retrieves and displays a profile.
+func runProfileCommand(pk string) error {
+	return withLoading("Retrieving profile", func() error {
+		return getProfile(pk)
+	})
+}
+
 // runUpdateProfileCommand updates the user's profile.
 func runUpdateProfileCommand(sk, pk, updateJSON, relaysRaw string) error {
 	var relays []string
@@ -1754,6 +1768,13 @@ func loadAndDecodeKey(password string) (sk, pk string, err error) {
 	}
 
 	return decodePrivateKey(privateKey)
+}
+
+// cliError prints an error to stderr and exits with code 1.
+// Used for CLI-mode error handling where exit is expected behavior.
+func cliError(err error) {
+	fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+	os.Exit(1)
 }
 
 func main() {
@@ -1951,7 +1972,7 @@ func main() {
 			OnDeleteProfile: DeleteProfile,
 		}
 		if err := tui.Run(cfg); err != nil {
-			log.Fatalf("TUI error: %v", err)
+			cliError(fmt.Errorf("TUI error: %w", err))
 		}
 		return
 	}
@@ -1959,13 +1980,13 @@ func main() {
 	// Read encryption password without echoing
 	password, err := readPassword()
 	if err != nil {
-		log.Fatalf("%v", err)
+		cliError(err)
 	}
 
 	// Handle NWC setup
 	if *nwcPtr != "" {
 		if err := runNWCSetup(*nwcPtr, password); err != nil {
-			log.Fatalf("%v", err)
+			cliError(err)
 		}
 		return
 	}
@@ -1973,7 +1994,7 @@ func main() {
 	// Handle Tipping
 	if *tipPtr > 0 {
 		if err := runTipCommand(*tipPtr, *tipUserPtr, password); err != nil {
-			log.Fatalf("%v", err)
+			cliError(err)
 		}
 		return
 	}
@@ -2000,7 +2021,7 @@ func main() {
 	// Save a new key action with loading bar.
 	if *storePtr {
 		if err := runStoreKeyCommand(*keyPtr, password); err != nil {
-			log.Fatalf("%v", err)
+			cliError(err)
 		}
 		return
 	}
@@ -2008,13 +2029,13 @@ func main() {
 	// Load and decode private key
 	sk, pk, err := loadAndDecodeKey(password)
 	if err != nil {
-		log.Fatalf("%v", err)
+		cliError(err)
 	}
 
 	// Handle NIP-89 register-handler command
 	if *registerHandlerPtr != "" {
 		if err := runRegisterHandlerCommand(sk, pk, *registerHandlerPtr, *urlTemplatePtr, *platformPtr); err != nil {
-			log.Fatalf("%v", err)
+			cliError(err)
 		}
 		return
 	}
@@ -2022,7 +2043,7 @@ func main() {
 	// Handle NIP-89 recommend command
 	if *recommendPtr != "" {
 		if err := runRecommendCommand(sk, pk, *recommendPtr, *relaysPtr); err != nil {
-			log.Fatalf("%v", err)
+			cliError(err)
 		}
 		return
 	}
@@ -2030,7 +2051,7 @@ func main() {
 	// Handle NIP-89 find-handlers command
 	if *findHandlersPtr > 0 {
 		if err := runFindHandlersCommand(*findHandlersPtr); err != nil {
-			log.Fatalf("%v", err)
+			cliError(err)
 		}
 		return
 	}
@@ -2069,7 +2090,7 @@ func main() {
 	// Handle DMs action with loading.
 	if *dmsPtr {
 		if err := runDMsCommand(sk); err != nil {
-			log.Fatalf("%v", err)
+			cliError(err)
 		}
 		return
 	}
@@ -2077,7 +2098,7 @@ func main() {
 	// Handle replies action with loading.
 	if *repliesPtr != "" {
 		if err := runRepliesCommand(*repliesPtr); err != nil {
-			log.Fatalf("%v", err)
+			cliError(err)
 		}
 		return
 	}
@@ -2104,7 +2125,7 @@ func main() {
 	// Handle profile update action with loading.
 	if *updatePtr != "" {
 		if err := runUpdateProfileCommand(sk, pk, *updatePtr, *relaysPtr); err != nil {
-			log.Fatalf("%v", err)
+			cliError(err)
 		}
 		return
 	}
@@ -2112,7 +2133,7 @@ func main() {
 	// Publish a message
 	if *messagePtr != "" {
 		if err := runPublishCommand(sk, pk, *messagePtr, *relaysPtr); err != nil {
-			log.Fatalf("%v", err)
+			cliError(err)
 		}
 		return
 	}
