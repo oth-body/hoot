@@ -1,0 +1,21 @@
+# Example relay configuration for hoot
+# Copy this file to:
+#   Linux:   ~/.config/nostr-cli/relays.txt
+#   macOS:   ~/Library/Application Support/nostr-cli/relays.txt
+#   Windows: %APPDATA%\nostr-cli\relays.txt
+
+# Popular public relays
+wss://relay.damus.io
+wss://relay.nostr.band
+wss://nostr.wine
+wss://relay.primal.net
+
+# Additional relays (uncomment to use)
+# wss://nos.lol
+# wss://nostr-pub.wellorder.net
+# wss://relay.nostrplebs.com
+# wss://brb.io
+# wss://relay.snort.social
+
+# Private/community relays (requires authentication)
+# wss://private-relay.example.com

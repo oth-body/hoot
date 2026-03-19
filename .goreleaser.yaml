@@ -1,0 +1,98 @@
+# GoReleaser configuration for hoot
+# https://goreleaser.com
+
+before:
+  hooks:
+    - go mod tidy
+    - go generate ./...
+
+builds:
+  - env:
+      - CGO_ENABLED=0
+    goos:
+      - linux
+      - darwin
+      - windows
+    goarch:
+      - amd64
+      - arm64
+    ldflags:
+      - -s -w -X main.version={{.Version}}
+    binary: hoot
+
+archives:
+  - format: tar.gz
+    name_template: "{{ .ProjectName }}-{{ .Os }}-{{ .Arch }}"
+    format_overrides:
+      - goos: windows
+        format: zip
+    files:
+      - README.md
+      - LICENSE
+      - relays.txt.example
+
+checksum:
+  name_template: 'checksums.txt'
+
+changelog:
+  sort: asc
+  filters:
+    exclude:
+      - '^docs:'
+      - '^test:'
+      - '^ci:'
+      - Merge pull request
+      - Merge branch
+
+release:
+  github:
+    owner: oth-body
+    name: hoot
+  draft: false
+  prerelease: auto
+  name_template: "{{.TagName}}"
+
+brews:
+  - name: hoot
+    repository:
+      owner: oth-body
+      name: homebrew-hoot
+      branch: main
+      token: "{{ .Env.HOMEBREW_TAP_GITHUB_TOKEN }}"
+    directory: Formula
+    homepage: https://github.com/oth-body/hoot
+    description: A Nostr CLI client with TUI support
+    license: MIT
+    test: |
+      system "#{bin}/hoot -version"
+    install: |
+      bin.install "hoot"
+      etc.install "relays.txt.example" => "hoot/relays.txt.example"
+
+nfpms:
+  - id: hoot
+    package_name: hoot
+    file_name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    homepage: https://github.com/oth-body/hoot
+    description: A Nostr CLI client with TUI support
+    maintainer: oth-body
+    license: MIT
+    formats:
+      - deb
+      - rpm
+      - archlinux
+    contents:
+      - src: ./relays.txt.example
+        dst: /etc/hoot/relays.txt.example
+        type: config
+
+scoops:
+  - name: hoot
+    repository:
+      owner: oth-body
+      name: scoop-hoot
+      branch: main
+      token: "{{ .Env.SCOOP_TAP_GITHUB_TOKEN }}"
+    homepage: https://github.com/oth-body/hoot
+    description: A Nostr CLI client with TUI support
+    license: MIT
