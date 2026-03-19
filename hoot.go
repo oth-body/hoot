@@ -53,7 +53,26 @@ const (
 	keyLength   = 32    // Derived key length in bytes
 	saltLength  = 32    // Salt length in bytes
 	nonceLength = 24    // Nonce length in bytes
+
+	// Timestamp validation constants
+	// nostr timestamps are seconds since Unix epoch (Jan 1, 1970)
+	// Min: reasonable past (year 2020)
+	// Max: reasonable future (year 2100)
+	timestampMin int64 = 1577836800  // 2020-01-01 00:00:00 UTC
+	timestampMax int64 = 4102444800  // 2100-01-01 00:00:00 UTC
 )
+
+// ValidateTimestamp checks if a nostr timestamp is within reasonable bounds
+// This prevents overflow issues and rejects obviously invalid timestamps
+func ValidateTimestamp(ts int64) error {
+	if ts < timestampMin {
+		return fmt.Errorf("timestamp %d is before year 2020 (too old)", ts)
+	}
+	if ts > timestampMax {
+		return fmt.Errorf("timestamp %d is after year 2100 (too far in future)", ts)
+	}
+	return nil
+}
 
 // TimeoutConfig holds configurable timeout values
 type TimeoutConfig struct {
@@ -615,6 +634,11 @@ func listPosts(pubKey string) error {
 		// Iterate over the returned channel
 	loop:
 		for ev := range evCh {
+			// Validate timestamp to prevent overflow/invalid data
+			if err := ValidateTimestamp(int64(ev.CreatedAt)); err != nil {
+				log.Printf("Skipping event with invalid timestamp: %v", err)
+				continue
+			}
 			events = append(events, *ev)
 			if len(events) >= 4 {
 				break loop
@@ -682,6 +706,10 @@ func getFeedPosts() ([]tui.FeedPost, error) {
 			continue
 		}
 		for ev := range evCh {
+			// Validate timestamp to prevent overflow/invalid data
+			if err := ValidateTimestamp(int64(ev.CreatedAt)); err != nil {
+				continue
+			}
 			// Cache the event for future use (24 hour TTL)
 			if eventCache != nil {
 				eventCache.StoreEvent(ev, 24*time.Hour)
@@ -737,6 +765,10 @@ func getDMs(privateKey string) ([]tui.FeedPost, error) {
 		}
 
 		for ev := range evCh {
+			// Validate timestamp to prevent overflow/invalid data
+			if err := ValidateTimestamp(int64(ev.CreatedAt)); err != nil {
+				continue
+			}
 			// Check if this DM is for us or from us
 			isForUs := false
 			isFromUs := ev.PubKey == publicKey
@@ -816,6 +848,10 @@ func getReactions(eventID string) ([]tui.FeedPost, error) {
 		}
 
 		for ev := range evCh {
+			// Validate timestamp to prevent overflow/invalid data
+			if err := ValidateTimestamp(int64(ev.CreatedAt)); err != nil {
+				continue
+			}
 			var content string
 			if ev.Kind == 7 {
 				// Reaction
@@ -933,6 +969,10 @@ func getProfile(pubKey string) error {
 			continue
 		}
 		for ev := range evCh {
+			// Validate timestamp
+			if err := ValidateTimestamp(int64(ev.CreatedAt)); err != nil {
+				continue
+			}
 			profileEvent = ev
 			break
 		}
@@ -1104,6 +1144,10 @@ func findHandlers(kind int) ([]struct {
 		}
 
 		for ev := range evCh {
+			// Validate timestamp to prevent overflow/invalid data
+			if err := ValidateTimestamp(int64(ev.CreatedAt)); err != nil {
+				continue
+			}
 			handler := struct {
 				PubKey         string
 				SupportedKinds []int
