@@ -1494,6 +1494,191 @@ func extractLud16(pubKey string, relays []string) (string, error) {
 	return profile.LUD16, nil
 }
 
+// runTipCommand handles the CLI tip command, returning errors instead of exiting.
+func runTipCommand(tipAmount int64, tipUser, password string) error {
+	// Validate tip amount
+	if tipAmount < minTipSats {
+		return fmt.Errorf("tip amount too small: minimum is %d sat(s)", minTipSats)
+	}
+	if tipAmount > maxTipSats {
+		return fmt.Errorf("tip amount too large: maximum is %d sat(s). For larger tips, please use your wallet directly", maxTipSats)
+	}
+
+	if tipUser == "" {
+		return fmt.Errorf("please specify a user to tip with -user")
+	}
+
+	target := tipUser
+	var hexPubKey string
+	var lud16 string
+
+	// Check if it is a lightning address
+	if strings.Contains(target, "@") {
+		lud16 = target
+	} else {
+		// Assume it's a pubkey (npub or hex)
+		if strings.HasPrefix(target, "npub") {
+			_, decoded, err := nip19.Decode(target)
+			if err != nil {
+				return fmt.Errorf("invalid npub: %w", err)
+			}
+			hexPubKey = decoded.(string)
+		} else {
+			hexPubKey = target
+		}
+
+		// Resolve LUD16 from profile
+		fmt.Println("Resolving Lightning Address from Nostr profile...")
+		relays := getRelayList()
+		l, err := extractLud16(hexPubKey, relays)
+		if err != nil {
+			return fmt.Errorf("could not find lightning address for user: %w", err)
+		}
+		lud16 = l
+	}
+
+	fmt.Printf("Found lightning address: %s\n", lud16)
+
+	// Resolve Callback
+	callback, err := resolveLud16(lud16)
+	if err != nil {
+		return fmt.Errorf("failed to resolve lightning address: %w", err)
+	}
+
+	// Fetch Invoice
+	fmt.Printf("Fetching invoice for %d sats...\n", tipAmount)
+	invoice, err := fetchLightningInvoice(callback, tipAmount)
+	if err != nil {
+		return fmt.Errorf("failed to fetch invoice: %w", err)
+	}
+
+	// Pay
+	fmt.Println("Paying invoice via NWC...")
+	if err := payInvoiceNWC(invoice, []byte(password)); err != nil {
+		return fmt.Errorf("payment failed: %w", err)
+	}
+	return nil
+}
+
+// decodePrivateKey decodes a private key (nsec or hex) and returns (sk, pk, error).
+func decodePrivateKey(privateKey string) (sk, pk string, err error) {
+	if strings.HasPrefix(privateKey, "nsec") {
+		_, decoded, decodeErr := nip19.Decode(privateKey)
+		if decodeErr != nil {
+			return "", "", fmt.Errorf("invalid nsec key: %w", decodeErr)
+		}
+		sk = decoded.(string)
+	} else {
+		sk = privateKey
+	}
+	pk, err = nostr.GetPublicKey(sk)
+	if err != nil {
+		return "", "", fmt.Errorf("failed to derive public key: %w", err)
+	}
+	return sk, pk, nil
+}
+
+// runRegisterHandlerCommand handles the NIP-89 handler registration CLI command.
+func runRegisterHandlerCommand(sk, pk, kindStrsRaw, urlTemplate, platform string) error {
+	kindStrs := strings.Split(kindStrsRaw, ",")
+	var kinds []int
+	for _, kindStr := range kindStrs {
+		kind, err := strconv.Atoi(strings.TrimSpace(kindStr))
+		if err != nil {
+			return fmt.Errorf("invalid kind: %s", kindStr)
+		}
+		kinds = append(kinds, kind)
+	}
+
+	if urlTemplate == "" {
+		return fmt.Errorf("URL template is required for handler registration (use -url)")
+	}
+
+	platforms := map[string]string{
+		platform: urlTemplate,
+	}
+
+	return withLoading("Registering handler", func() error {
+		return registerAsHandler(sk, pk, kinds, platforms)
+	})
+}
+
+// runRecommendCommand handles the NIP-89 recommend CLI command.
+func runRecommendCommand(sk, pk, recommendRaw, relaysRaw string) error {
+	parts := strings.Split(recommendRaw, ":")
+	if len(parts) != 3 {
+		return fmt.Errorf("invalid recommend format. Use: pubkey:d-identifier:kind")
+	}
+
+	handlerPubKey := parts[0]
+	handlerDIdentifier := parts[1]
+	kind, err := strconv.Atoi(parts[2])
+	if err != nil {
+		return fmt.Errorf("invalid kind: %s", parts[2])
+	}
+
+	var relayHint string
+	if relaysRaw != "" {
+		relays := strings.Split(relaysRaw, ",")
+		relayHint = strings.TrimSpace(relays[0])
+	} else {
+		relayList := getRelayList()
+		if len(relayList) > 0 {
+			relayHint = relayList[0]
+		}
+	}
+
+	return withLoading("Publishing recommendation", func() error {
+		return recommendApp(sk, pk, handlerPubKey, handlerDIdentifier, kind, relayHint, "web")
+	})
+}
+
+// runDMsCommand loads and displays direct messages.
+func runDMsCommand(sk string) error {
+	return withLoading("Loading DMs", func() error {
+		dms, err := getDMs(sk)
+		if err != nil {
+			return fmt.Errorf("failed to load DMs: %w", err)
+		}
+		fmt.Println("Your recent direct messages:")
+		for _, dm := range dms {
+			fmt.Printf("%s (%s): %s\n\n", dm.Author[:16]+"...", dm.CreatedAt, dm.Content)
+		}
+		return nil
+	})
+}
+
+// runRepliesCommand loads and displays replies/reactions to an event.
+func runRepliesCommand(eventID string) error {
+	return withLoading("Loading replies", func() error {
+		replies, err := getReactions(eventID)
+		if err != nil {
+			return fmt.Errorf("failed to load replies: %w", err)
+		}
+		fmt.Printf("Replies and reactions to event %s:\n", eventID)
+		for _, reply := range replies {
+			fmt.Printf("%s (%s): %s\n\n", reply.Author[:16]+"...", reply.CreatedAt, reply.Content)
+		}
+		return nil
+	})
+}
+
+// runUpdateProfileCommand updates the user's profile.
+func runUpdateProfileCommand(sk, pk, updateJSON, relaysRaw string) error {
+	var relays []string
+	if relaysRaw != "" {
+		relays = strings.Split(relaysRaw, ",")
+		for i := range relays {
+			relays[i] = strings.TrimSpace(relays[i])
+		}
+	} else {
+		relays = getRelayList()
+	}
+	return withLoading("Updating profile", func() error {
+		return editProfile(sk, updateJSON, pk, relays)
+	})
+}
+
 func main() {
 	// Initialize cache for improved performance
 	configDir := getConfigDir()
@@ -1719,66 +1904,8 @@ func main() {
 
 	// Handle Tipping
 	if *tipPtr > 0 {
-		// Validate tip amount
-		if *tipPtr < minTipSats {
-			log.Fatalf("Tip amount too small: minimum is %d sat(s)", minTipSats)
-		}
-		if *tipPtr > maxTipSats {
-			log.Fatalf("Tip amount too large: maximum is %d sat(s). For larger tips, please use your wallet directly.", maxTipSats)
-		}
-
-		if *tipUserPtr == "" {
-			log.Fatalf("Please specify a user to tip with -user")
-		}
-
-		target := *tipUserPtr
-		var hexPubKey string
-		var lud16 string
-
-		// Check if it is a lightning address
-		if strings.Contains(target, "@") {
-			lud16 = target
-		} else {
-			// Assume it's a pubkey (npub or hex)
-			if strings.HasPrefix(target, "npub") {
-				_, decoded, err := nip19.Decode(target)
-				if err != nil {
-					log.Fatalf("Invalid npub: %v", err)
-				}
-				hexPubKey = decoded.(string)
-			} else {
-				hexPubKey = target
-			}
-
-			// Resolve LUD16 from profile
-			fmt.Println("Resolving Lightning Address from Nostr profile...")
-			relays := getRelayList()
-			l, err := extractLud16(hexPubKey, relays)
-			if err != nil {
-				log.Fatalf("Could not find lightning address for user: %v", err)
-			}
-			lud16 = l
-		}
-
-		fmt.Printf("Found lightning address: %s\n", lud16)
-
-		// Resolve Callback
-		callback, err := resolveLud16(lud16)
-		if err != nil {
-			log.Fatalf("Failed to resolve lightning address: %v", err)
-		}
-
-		// Fetch Invoice
-		fmt.Printf("Fetching invoice for %d sats...\n", *tipPtr)
-		invoice, err := fetchLightningInvoice(callback, *tipPtr)
-		if err != nil {
-			log.Fatalf("Failed to fetch invoice: %v", err)
-		}
-
-		// Pay
-		fmt.Println("Paying invoice via NWC...")
-		if err := payInvoiceNWC(invoice, []byte(password)); err != nil {
-			log.Fatalf("Payment failed: %v", err)
+		if err := runTipCommand(*tipPtr, *tipUserPtr, password); err != nil {
+			log.Fatalf("%v", err)
 		}
 		return
 	}
@@ -1826,82 +1953,24 @@ func main() {
 		log.Fatalf("Failed to load private key: %v", err)
 	}
 
-	// For actions that need the private key decoded and public key derived,
-	// decode it appropriately.
-	var sk string
-	if strings.HasPrefix(privateKey, "nsec") {
-		_, decoded, err := nip19.Decode(privateKey)
-		if err != nil {
-			log.Fatalf("Invalid nsec key: %v", err)
-		}
-		sk = decoded.(string)
-	} else {
-		sk = privateKey
-	}
-	pk, err := nostr.GetPublicKey(sk)
+	// Decode private key and derive public key
+	sk, pk, err := decodePrivateKey(privateKey)
 	if err != nil {
-		log.Fatalf("Failed to derive public key: %v", err)
+		log.Fatalf("%v", err)
 	}
 
 	// Handle NIP-89 register-handler command
 	if *registerHandlerPtr != "" {
-		kindStrs := strings.Split(*registerHandlerPtr, ",")
-		var kinds []int
-		for _, kindStr := range kindStrs {
-			kind, err := strconv.Atoi(strings.TrimSpace(kindStr))
-			if err != nil {
-				log.Fatalf("Invalid kind: %s", kindStr)
-			}
-			kinds = append(kinds, kind)
-		}
-
-		if *urlTemplatePtr == "" {
-			log.Fatalf("URL template is required for handler registration")
-		}
-
-		platforms := map[string]string{
-			*platformPtr: *urlTemplatePtr,
-		}
-
-		err := withLoading("Registering handler", func() error {
-			return registerAsHandler(sk, pk, kinds, platforms)
-		})
-		if err != nil {
-			log.Fatalf("Failed to register handler: %v", err)
+		if err := runRegisterHandlerCommand(sk, pk, *registerHandlerPtr, *urlTemplatePtr, *platformPtr); err != nil {
+			log.Fatalf("%v", err)
 		}
 		return
 	}
 
 	// Handle NIP-89 recommend command
 	if *recommendPtr != "" {
-		parts := strings.Split(*recommendPtr, ":")
-		if len(parts) != 3 {
-			log.Fatalf("Invalid recommend format. Use: pubkey:d-identifier:kind")
-		}
-
-		handlerPubKey := parts[0]
-		handlerDIdentifier := parts[1]
-		kind, err := strconv.Atoi(parts[2])
-		if err != nil {
-			log.Fatalf("Invalid kind: %s", parts[2])
-		}
-
-		relayHint := ""
-		if *relaysPtr != "" {
-			relays := strings.Split(*relaysPtr, ",")
-			relayHint = strings.TrimSpace(relays[0])
-		} else {
-			relayList := getRelayList()
-			if len(relayList) > 0 {
-				relayHint = relayList[0]
-			}
-		}
-
-		err = withLoading("Publishing recommendation", func() error {
-			return recommendApp(sk, pk, handlerPubKey, handlerDIdentifier, kind, relayHint, *platformPtr)
-		})
-		if err != nil {
-			log.Fatalf("Failed to publish recommendation: %v", err)
+		if err := runRecommendCommand(sk, pk, *recommendPtr, *relaysPtr); err != nil {
+			log.Fatalf("%v", err)
 		}
 		return
 	}
@@ -1970,38 +2039,16 @@ func main() {
 
 	// Handle DMs action with loading.
 	if *dmsPtr {
-		_ = withLoading("Loading DMs", func() error {
-			dms, err := getDMs(sk)
-			if err != nil {
-				return fmt.Errorf("failed to load DMs: %w", err)
-			}
-			fmt.Println("Your recent direct messages:")
-			for _, dm := range dms {
-				fmt.Printf("%s (%s): %s\n\n", dm.Author[:16]+"...", dm.CreatedAt, dm.Content)
-			}
-			return nil
-		})
-		if err != nil {
-			log.Fatalf("Failed to load DMs: %v", err)
+		if err := runDMsCommand(sk); err != nil {
+			log.Fatalf("%v", err)
 		}
 		return
 	}
 
 	// Handle replies action with loading.
 	if *repliesPtr != "" {
-		_ = withLoading("Loading replies", func() error {
-			replies, err := getReactions(*repliesPtr)
-			if err != nil {
-				return fmt.Errorf("failed to load replies: %w", err)
-			}
-			fmt.Printf("Replies and reactions to event %s:\n", *repliesPtr)
-			for _, reply := range replies {
-				fmt.Printf("%s (%s): %s\n\n", reply.Author[:16]+"...", reply.CreatedAt, reply.Content)
-			}
-			return nil
-		})
-		if err != nil {
-			log.Fatalf("Failed to load replies: %v", err)
+		if err := runRepliesCommand(*repliesPtr); err != nil {
+			log.Fatalf("%v", err)
 		}
 		return
 	}
@@ -2027,30 +2074,28 @@ func main() {
 
 	// Handle profile update action with loading.
 	if *updatePtr != "" {
-		var relays []string
-		if *relaysPtr != "" {
-			relays = strings.Split(*relaysPtr, ",")
-			for i := range relays {
-				relays[i] = strings.TrimSpace(relays[i])
-			}
-		} else {
-			relays = getRelayList()
-		}
-		err = withLoading("Updating profile", func() error {
-			return editProfile(sk, *updatePtr, pk, relays)
-		})
-		if err != nil {
-			log.Fatalf("Failed to update profile: %v", err)
+		if err := runUpdateProfileCommand(sk, pk, *updatePtr, *relaysPtr); err != nil {
+			log.Fatalf("%v", err)
 		}
 		return
 	}
 
-	// Prepare a new post event.
+	// Publish a message
+	if *messagePtr != "" {
+		if err := runPublishCommand(sk, pk, *messagePtr, *relaysPtr); err != nil {
+			log.Fatalf("%v", err)
+		}
+		return
+	}
+}
+
+// runPublishCommand signs and publishes a text note to relays.
+func runPublishCommand(sk, pk, content, relaysRaw string) error {
 	event := nostr.Event{
 		PubKey:    pk,
 		CreatedAt: nostr.Timestamp(time.Now().Unix()),
 		Kind:      1,
-		Content:   *messagePtr,
+		Content:   content,
 		Tags:      nostr.Tags{},
 	}
 	words := strings.Fields(event.Content)
@@ -2060,14 +2105,13 @@ func main() {
 			event.Tags = append(event.Tags, []string{"t", tag})
 		}
 	}
-	if err = event.Sign(sk); err != nil {
-		log.Fatalf("Failed to sign event: %v", err)
+	if err := event.Sign(sk); err != nil {
+		return fmt.Errorf("failed to sign event: %w", err)
 	}
 
-	// Prepare relays.
 	var relays []string
-	if *relaysPtr != "" {
-		relays = strings.Split(*relaysPtr, ",")
+	if relaysRaw != "" {
+		relays = strings.Split(relaysRaw, ",")
 		for i := range relays {
 			relays[i] = strings.TrimSpace(relays[i])
 		}
@@ -2075,8 +2119,7 @@ func main() {
 		relays = getRelayList()
 	}
 
-	// Publish the event using a relay pool with a loading bar.
-	err = withLoading("Publishing post", func() error {
+	return withLoading("Publishing post", func() error {
 		ctx := context.Background()
 		pool := nostr.NewSimplePool(ctx)
 		for _, relayURL := range relays {
@@ -2085,8 +2128,7 @@ func main() {
 				log.Printf("Failed to add relay %s: %v", relayURL, err)
 				continue
 			}
-			// Don't defer here - let pool manage relay lifecycle
-			_ = relay // Relay is managed by pool
+			_ = relay
 		}
 		pool.Relays.Range(func(key string, relay *nostr.Relay) bool {
 			err := relay.Publish(ctx, event)
@@ -2099,7 +2141,4 @@ func main() {
 		})
 		return nil
 	})
-	if err != nil {
-		log.Fatalf("Publishing failed: %v", err)
-	}
 }
