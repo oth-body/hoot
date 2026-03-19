@@ -843,7 +843,7 @@ func getProfile(pubKey string) {
 }
 
 // editProfile publishes a new kind 0 (profile) event with the updated profile info.
-func editProfile(privateKey, newContent, pubKey string, relays []string) {
+func editProfile(privateKey, newContent, pubKey string, relays []string) error {
 	event := nostr.Event{
 		PubKey:    pubKey,
 		CreatedAt: nostr.Timestamp(time.Now().Unix()),
@@ -852,7 +852,7 @@ func editProfile(privateKey, newContent, pubKey string, relays []string) {
 		Tags:      nostr.Tags{},
 	}
 	if err := event.Sign(privateKey); err != nil {
-		log.Fatalf("Failed to sign profile event: %v", err)
+		return fmt.Errorf("failed to sign profile event: %w", err)
 	}
 	ctx := context.Background()
 	pool := nostr.NewSimplePool(ctx)
@@ -869,6 +869,7 @@ func editProfile(privateKey, newContent, pubKey string, relays []string) {
 			fmt.Printf("Failed to publish to relay %s: %v\n", r.URL, err)
 		}
 	}
+	return nil
 }
 
 // registerAsHandler registers the app as a handler for specific kinds.
@@ -1744,10 +1745,12 @@ func main() {
 		} else {
 			relays = getRelayList()
 		}
-		_ = withLoading("Updating profile", func() error {
-			editProfile(sk, *updatePtr, pk, relays)
-			return nil
+		err = withLoading("Updating profile", func() error {
+			return editProfile(sk, *updatePtr, pk, relays)
 		})
+		if err != nil {
+			log.Fatalf("Failed to update profile: %v", err)
+		}
 		return
 	}
 
