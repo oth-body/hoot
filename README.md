@@ -236,6 +236,8 @@ hoot -find-handlers 1
 | `-url-template "url"` | URL template for handler |
 | `-recommend "pk:d:kind"` | Recommend an app for a kind |
 | `-find-handlers <kind>` | Find handlers for a specific kind |
+| `-check-update` | Check for available updates |
+| `-update` | Update hoot to the latest version |
 
 ---
 
