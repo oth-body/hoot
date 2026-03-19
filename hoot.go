@@ -1755,17 +1755,25 @@ func main() {
 
 	// Check if a command was provided (e.g. "profile")
 	if flag.NArg() > 0 && flag.Arg(0) == "profile" {
-		_ = withLoading("Retrieving profile", func() error {
+		err := withLoading("Retrieving profile", func() error {
 			return getProfile(pk)
 		})
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+			os.Exit(1)
+		}
 		return
 	}
 
 	// Handle list posts action with loading.
 	if *listPtr {
-		_ = withLoading("Listing posts", func() error {
+		err := withLoading("Listing posts", func() error {
 			return listPosts(pk)
 		})
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+			os.Exit(1)
+		}
 		return
 	}
 
@@ -1816,10 +1824,13 @@ func main() {
 
 	// Handle profile view action with loading.
 	if *profilePtr {
-		_ = withLoading("Retrieving profile", func() error {
+		err := withLoading("Retrieving profile", func() error {
 			return getProfile(pk)
-			return nil
 		})
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+			os.Exit(1)
+		}
 		return
 	}
 
