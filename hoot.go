@@ -36,16 +36,69 @@ const (
 	version          = "0.0.4" // Define the version here
 
 	// Tip validation constants
-	minTipSats int64 = 1     // Minimum 1 sat
+	minTipSats int64 = 1      // Minimum 1 sat
 	maxTipSats int64 = 100000 // Maximum 100k sats (~$50-100 USD)
-
-	// Timeout configuration (configurable via environment variables)
-	relayConnectTimeout  = 10 * time.Second  // Default timeout for relay connections
-	queryTimeout         = 10 * time.Second  // Default timeout for queries
-	dmQueryTimeout       = 15 * time.Second  // Timeout for DM queries (longer due to decryption)
-	signEventTimeout     = 30 * time.Second  // Timeout for signing events (NIP-46)
-	publishTimeout       = 5 * time.Second   // Timeout for publishing to individual relays
 )
+
+// TimeoutConfig holds configurable timeout values
+type TimeoutConfig struct {
+	RelayConnect time.Duration
+	Query        time.Duration
+	DMQuery      time.Duration
+	SignEvent    time.Duration
+	Publish      time.Duration
+}
+
+// DefaultTimeouts returns the default timeout configuration
+func DefaultTimeouts() TimeoutConfig {
+	return TimeoutConfig{
+		RelayConnect: 10 * time.Second,
+		Query:        10 * time.Second,
+		DMQuery:       15 * time.Second,
+		SignEvent:     30 * time.Second,
+		Publish:       5 * time.Second,
+	}
+}
+
+// LoadTimeoutsFromEnv loads timeout configuration from environment variables
+func LoadTimeoutsFromEnv() TimeoutConfig {
+	cfg := DefaultTimeouts()
+
+	if v := os.Getenv("HOOT_RELAY_CONNECT_TIMEOUT"); v != "" {
+		if d, err := time.ParseDuration(v); err == nil {
+			cfg.RelayConnect = d
+		}
+	}
+	if v := os.Getenv("HOOT_QUERY_TIMEOUT"); v != "" {
+		if d, err := time.ParseDuration(v); err == nil {
+			cfg.Query = d
+		}
+	}
+	if v := os.Getenv("HOOT_DM_QUERY_TIMEOUT"); v != "" {
+		if d, err := time.ParseDuration(v); err == nil {
+			cfg.DMQuery = d
+		}
+	}
+	if v := os.Getenv("HOOT_SIGN_EVENT_TIMEOUT"); v != "" {
+		if d, err := time.ParseDuration(v); err == nil {
+			cfg.SignEvent = d
+		}
+	}
+	if v := os.Getenv("HOOT_PUBLISH_TIMEOUT"); v != "" {
+		if d, err := time.ParseDuration(v); err == nil {
+			cfg.Publish = d
+		}
+	}
+
+	return cfg
+}
+
+// Global timeout configuration (loaded at startup)
+var timeouts TimeoutConfig
+
+func init() {
+	timeouts = LoadTimeoutsFromEnv()
+}
 
 var defaultRelays = []string{
 	"wss://relay.damus.io",
@@ -527,7 +580,7 @@ func listPosts(pubKey string) error {
 		Kinds:   []int{1},
 		Limit:   4,
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), queryTimeout)
+	ctx, cancel := context.WithTimeout(context.Background(), timeouts.Query)
 	defer cancel()
 
 	var events []nostr.Event
@@ -584,7 +637,7 @@ func getFeedPosts() ([]tui.FeedPost, error) {
 		Kinds: []int{1},
 		Limit: 20,
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), queryTimeout)
+	ctx, cancel := context.WithTimeout(context.Background(), timeouts.Query)
 	defer cancel()
 
 	var posts []tui.FeedPost
@@ -652,7 +705,7 @@ func getDMs(privateKey string) ([]tui.FeedPost, error) {
 		Kinds: []int{4}, // DMs are kind 4
 		Limit: 50,
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), dmQueryTimeout)
+	ctx, cancel := context.WithTimeout(context.Background(), timeouts.DMQuery)
 	defer cancel()
 
 	var dms []tui.FeedPost
@@ -731,7 +784,7 @@ func getReactions(eventID string) ([]tui.FeedPost, error) {
 		Tags:  nostr.TagMap{"e": []string{eventID}},
 		Limit: 20,
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), queryTimeout)
+	ctx, cancel := context.WithTimeout(context.Background(), timeouts.Query)
 	defer cancel()
 
 	var reactions []tui.FeedPost
@@ -790,7 +843,7 @@ func publishPostTUI(content string) error {
 	// If NIP-46 session is active, use it
 	if nip46Session != nil {
 		event.PubKey = nip46Session.UserPublicKey
-		ctx, cancel := context.WithTimeout(context.Background(), signEventTimeout)
+		ctx, cancel := context.WithTimeout(context.Background(), timeouts.SignEvent)
 		defer cancel()
 		if err := nip46Session.SignEvent(ctx, &event); err != nil {
 			return fmt.Errorf("remote signing failed: %w", err)
@@ -807,7 +860,7 @@ func publishPostTUI(content string) error {
 	success := 0
 	var failedRelays []string
 	for _, url := range relays {
-		ctx, cancel := context.WithTimeout(context.Background(), publishTimeout)
+		ctx, cancel := context.WithTimeout(context.Background(), timeouts.Publish)
 		defer cancel()
 		relay, err := nostr.RelayConnect(ctx, url)
 		if err != nil {
@@ -848,7 +901,7 @@ func getProfile(pubKey string) error {
 		Kinds:   []int{0},
 		Limit:   1,
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), queryTimeout)
+	ctx, cancel := context.WithTimeout(context.Background(), timeouts.Query)
 	defer cancel()
 
 	var profileEvent *nostr.Event
@@ -1011,7 +1064,7 @@ func findHandlers(kind int) ([]struct {
 		Kinds: []int{1984},
 		Tags:  nostr.TagMap{"k": []string{fmt.Sprintf("%d", kind)}},
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), queryTimeout)
+	ctx, cancel := context.WithTimeout(context.Background(), timeouts.Query)
 	defer cancel()
 
 	var handlers []struct {
@@ -1260,7 +1313,7 @@ func extractLud16(pubKey string, relays []string) (string, error) {
 		Limit:   1,
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), queryTimeout)
+	ctx, cancel := context.WithTimeout(context.Background(), timeouts.Query)
 	defer cancel()
 
 	var profileEvent *nostr.Event
