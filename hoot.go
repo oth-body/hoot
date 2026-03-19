@@ -9,6 +9,7 @@ import (
 	"hoot/cache"
 	"hoot/nip46"
 	"hoot/tui"
+	"io"
 	"log"
 	"net/http"
 	"net/url"
@@ -1841,6 +1842,160 @@ func cliError(err error) {
 	os.Exit(1)
 }
 
+// GitHubRelease represents a GitHub release response
+type GitHubRelease struct {
+	TagName string `json:"tag_name"`
+	Assets  []struct {
+		Name string `json:"name"`
+		URL  string `json:"browser_download_url"`
+	} `json:"assets"`
+}
+
+// getLatestRelease fetches the latest release from GitHub
+func getLatestRelease() (*GitHubRelease, error) {
+	resp, err := http.Get("https://api.github.com/repos/oth-body/hoot/releases/latest")
+	if err != nil {
+		return nil, fmt.Errorf("failed to fetch releases: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode == 404 {
+		return nil, fmt.Errorf("no releases found. Visit https://github.com/oth-body/hoot/releases")
+	}
+
+	if resp.StatusCode != 200 {
+		return nil, fmt.Errorf("GitHub API returned status %d", resp.StatusCode)
+	}
+
+	var release GitHubRelease
+	if err := json.NewDecoder(resp.Body).Decode(&release); err != nil {
+		return nil, fmt.Errorf("failed to parse release: %w", err)
+	}
+
+	return &release, nil
+}
+
+// getBinaryName returns the expected binary name for the current OS/arch
+func getBinaryName() string {
+	osName := runtime.GOOS
+	arch := runtime.GOARCH
+
+	if osName == "windows" {
+		return fmt.Sprintf("hoot-%s-%s.exe", osName, arch)
+	}
+	return fmt.Sprintf("hoot-%s-%s", osName, arch)
+}
+
+// checkForUpdate checks if a newer version is available
+func checkForUpdate() error {
+	release, err := getLatestRelease()
+	if err != nil {
+		return err
+	}
+
+	latestVersion := strings.TrimPrefix(release.TagName, "v")
+	currentVersion := version
+
+	fmt.Printf("Current version: %s\n", currentVersion)
+	fmt.Printf("Latest version:  %s\n", latestVersion)
+
+	if latestVersion == currentVersion {
+		fmt.Println("✓ You're already on the latest version!")
+		return nil
+	}
+
+	fmt.Println("⬆️  A newer version is available!")
+	fmt.Printf("Run 'hoot -update' to install version %s\n", latestVersion)
+	return nil
+}
+
+// selfUpdate downloads and installs the latest version
+func selfUpdate() error {
+	fmt.Println("Checking for updates...")
+
+	release, err := getLatestRelease()
+	if err != nil {
+		return err
+	}
+
+	latestVersion := strings.TrimPrefix(release.TagName, "v")
+	currentVersion := version
+
+	if latestVersion == currentVersion {
+		fmt.Println("✓ You're already on the latest version!")
+		return nil
+	}
+
+	fmt.Printf("Updating from %s to %s...\n", currentVersion, latestVersion)
+
+	// Find the correct binary for this OS/arch
+	binaryName := getBinaryName()
+	var downloadURL string
+	for _, asset := range release.Assets {
+		if asset.Name == binaryName {
+			downloadURL = asset.URL
+			break
+		}
+	}
+
+	if downloadURL == "" {
+		return fmt.Errorf("no binary found for %s/%s. Available: %v", runtime.GOOS, runtime.GOARCH, release.Assets)
+	}
+
+	// Download the new binary
+	fmt.Printf("Downloading %s...\n", binaryName)
+	resp, err := http.Get(downloadURL)
+	if err != nil {
+		return fmt.Errorf("failed to download: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != 200 {
+		return fmt.Errorf("download failed with status %d", resp.StatusCode)
+	}
+
+	// Get current executable path
+	execPath, err := os.Executable()
+	if err != nil {
+		return fmt.Errorf("failed to get executable path: %w", err)
+	}
+
+	// Create temp file for new binary
+	tmpPath := execPath + ".new"
+	out, err := os.OpenFile(tmpPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0755)
+	if err != nil {
+		return fmt.Errorf("failed to create temp file: %w", err)
+	}
+
+	if _, err := io.Copy(out, resp.Body); err != nil {
+		out.Close()
+		os.Remove(tmpPath)
+		return fmt.Errorf("failed to write binary: %w", err)
+	}
+	out.Close()
+
+	// Backup old binary
+	backupPath := execPath + ".old"
+	if err := os.Rename(execPath, backupPath); err != nil {
+		os.Remove(tmpPath)
+		return fmt.Errorf("failed to backup old binary: %w", err)
+	}
+
+	// Move new binary into place
+	if err := os.Rename(tmpPath, execPath); err != nil {
+		// Try to restore backup
+		os.Rename(backupPath, execPath)
+		os.Remove(tmpPath)
+		return fmt.Errorf("failed to install new binary: %w", err)
+	}
+
+	// Clean up backup
+	os.Remove(backupPath)
+
+	fmt.Printf("✓ Successfully updated to version %s!\n", latestVersion)
+	return nil
+}
+
 func main() {
 	// Initialize cache for improved performance
 	configDir := getConfigDir()
@@ -1864,6 +2019,8 @@ func main() {
 	dmsPtr := flag.Bool("dms", false, "View direct messages")
 	repliesPtr := flag.String("replies", "", "View replies/reactions for a specific event ID")
 	versionPtr := flag.Bool("version", false, "Display the version")
+	updateSelfPtr := flag.Bool("update", false, "Update hoot to the latest version")
+	checkUpdatePtr := flag.Bool("check-update", false, "Check for available updates without installing")
 
 	// NWC / Tipping flags
 	nwcPtr := flag.String("nwc", "", "Set NWC URI for tipping")
@@ -1882,6 +2039,22 @@ func main() {
 	// Handle version flag
 	if *versionPtr {
 		fmt.Printf("nostr-cli version %s\n", version)
+		return
+	}
+
+	// Handle check-update flag
+	if *checkUpdatePtr {
+		if err := checkForUpdate(); err != nil {
+			cliError(err)
+		}
+		return
+	}
+
+	// Handle self-update flag
+	if *updateSelfPtr {
+		if err := selfUpdate(); err != nil {
+			cliError(err)
+		}
 		return
 	}
 
