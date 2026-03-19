@@ -159,6 +159,67 @@ hoot -r "wss://relay1.com,wss://relay2.com" -m "Hello from custom relays!"
 
 ---
 
+### Common Workflows
+
+#### Complete Setup
+
+```bash
+# 1. Store your key
+hoot -s -k nsec1...
+
+# 2. Configure custom relays
+cat > ~/.config/nostr-cli/relays.txt << EOF
+wss://relay.damus.io
+wss://relay.nostr.band
+wss://nostr.wine
+EOF
+
+# 3. Post introduction
+hoot -m "Hello Nostr! #introduction"
+```
+
+#### Post with Hashtags and Custom Relays
+
+```bash
+hoot -r "wss://my-relay.com,wss://backup-relay.com" \
+     -m "Just deployed hoot v0.0.4! 🎉 #go #nostr #opensource"
+```
+
+#### View and Reply
+
+```bash
+# See your recent posts
+hoot -l
+
+# View replies to a specific note
+hoot -replies note1abc123...
+
+# View your DMs
+hoot -dms
+```
+
+#### Profile Management
+
+```bash
+# View your profile
+hoot -p
+
+# Update with Lightning address
+hoot -u '{"name":"Alice","about":"Building on Nostr","lud16":"alice@getalby.com"}'
+
+# Full profile update
+hoot -u '{
+  "name": "Alice Nostr",
+  "about": "Building on Nostr | Go developer",
+  "picture": "https://example.com/profile.png",
+  "banner": "https://example.com/banner.png",
+  "lud16": "alice@getalby.com",
+  "nip05": "alice@example.com"
+}'
+```
+
+---
+
 ### Tipping with NWC (Nostr Wallet Connect)
 
 Hoot supports sending Lightning tips via NWC.
@@ -182,6 +243,9 @@ hoot -tip 100 -user <hex-pubkey>
 
 # Tip directly to a Lightning address
 hoot -tip 100 -user alice@getalby.com
+
+# Larger tip to a Nostr user
+hoot -tip 1000 -user npub1abc123...
 ```
 
 ---
@@ -191,6 +255,7 @@ hoot -tip 100 -user alice@getalby.com
 Register your app as a handler for specific event kinds:
 
 ```bash
+# Register for note handling (kind 1) and reposts (kind 6)
 hoot -register-handler "1,6" -platform web -url-template "https://myapp.com/e/<bech32>"
 ```
 
@@ -203,6 +268,7 @@ hoot -recommend "pubkey:d-identifier:1"
 Find handlers for a specific kind:
 
 ```bash
+# Find apps that handle kind 1 (text notes)
 hoot -find-handlers 1
 ```
 
