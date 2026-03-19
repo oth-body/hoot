@@ -293,6 +293,16 @@ func getConfigDir() string {
 	return filepath.Join(configDir, appName)
 }
 
+// isValidRelayURL checks if a URL is a valid websocket relay URL.
+// Only ws:// and wss:// schemes are accepted, and host must not be empty.
+func isValidRelayURL(urlStr string) bool {
+	u, err := url.Parse(urlStr)
+	if err != nil {
+		return false
+	}
+	return (u.Scheme == "wss" || u.Scheme == "ws") && u.Host != ""
+}
+
 // loadRelays attempts to read relay URLs from a local "relays.txt" file first,
 // if not found then it checks the config directory.
 func loadRelays() ([]string, error) {
@@ -313,6 +323,10 @@ func loadRelays() ([]string, error) {
 	for _, line := range lines {
 		line = strings.TrimSpace(line)
 		if line != "" && !strings.HasPrefix(line, "//") { // ignore commented lines
+			if !isValidRelayURL(line) {
+				log.Printf("Warning: skipping invalid relay URL: %s", line)
+				continue
+			}
 			relays = append(relays, line)
 		}
 	}
