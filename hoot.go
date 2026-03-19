@@ -208,6 +208,42 @@ func setEventCache(c *cache.Cache) {
 	eventCache = c
 }
 
+// PublishResult tracks the outcome of publishing an event to multiple relays
+type PublishResult struct {
+	SuccessCount int
+	TotalRelays  int
+	FailedRelays []string
+}
+
+// publishToRelays publishes an event to multiple relays and returns the result.
+// It uses the configured publish timeout and tracks success/failure for each relay.
+func publishToRelays(event *nostr.Event, relays []string) *PublishResult {
+	result := &PublishResult{
+		TotalRelays:  len(relays),
+		FailedRelays: make([]string, 0),
+	}
+
+	for _, url := range relays {
+		ctx, cancel := context.WithTimeout(context.Background(), timeouts.Publish)
+		relay, err := nostr.RelayConnect(ctx, url)
+		if err != nil {
+			result.FailedRelays = append(result.FailedRelays, url)
+			cancel()
+			continue
+		}
+
+		if err := relay.Publish(ctx, *event); err == nil {
+			result.SuccessCount++
+		} else {
+			result.FailedRelays = append(result.FailedRelays, url)
+		}
+		relay.Close()
+		cancel()
+	}
+
+	return result
+}
+
 // Updated StoredKey includes the password hash.
 type StoredKey struct {
 	EncryptedKey []byte `json:"encrypted_key"`
@@ -1027,34 +1063,18 @@ func publishPostTUI(content string) error {
 		}
 	}
 
-	success := 0
-	var failedRelays []string
-	for _, url := range relays {
-		ctx, cancel := context.WithTimeout(context.Background(), timeouts.Publish)
-		defer cancel()
-		relay, err := nostr.RelayConnect(ctx, url)
-		if err != nil {
-			failedRelays = append(failedRelays, url)
-			continue
-		}
+	// Publish to relays using helper
+	result := publishToRelays(&event, relays)
 
-		if err := relay.Publish(ctx, event); err == nil {
-			success++
-		} else {
-			failedRelays = append(failedRelays, url)
-		}
-		relay.Close()
-	}
-
-	if success == 0 {
+	if result.SuccessCount == 0 {
 		return fmt.Errorf("failed to publish to any relay")
 	}
 
 	// Log success details for debugging
-	if len(failedRelays) > 0 {
-		log.Printf("Published to %d/%d relays. Failed: %v", success, len(relays), failedRelays)
+	if len(result.FailedRelays) > 0 {
+		log.Printf("Published to %d/%d relays. Failed: %v", result.SuccessCount, len(relays), result.FailedRelays)
 	} else {
-		log.Printf("Published successfully to all %d relays", success)
+		log.Printf("Published successfully to all %d relays", result.SuccessCount)
 	}
 
 	return nil
@@ -1133,22 +1153,18 @@ func editProfile(privateKey, newContent, pubKey string, relays []string) error {
 	if err := event.Sign(privateKey); err != nil {
 		return fmt.Errorf("failed to sign profile event: %w", err)
 	}
-	ctx := context.Background()
-	pool := nostr.NewSimplePool(ctx)
-	for _, relayURL := range relays {
-		r, err := pool.EnsureRelay(relayURL)
-		if err != nil {
-			log.Printf("Failed to add relay %s: %v", relayURL, err)
-			continue
+
+	// Publish to relays using helper
+	result := publishToRelays(&event, relays)
+
+	if result.SuccessCount > 0 {
+		fmt.Printf("Profile update published to %d/%d relays\n", result.SuccessCount, len(relays))
+		if len(result.FailedRelays) > 0 {
+			log.Printf("Failed relays: %v", result.FailedRelays)
 		}
-		err = r.Publish(ctx, event)
-		if err == nil {
-			fmt.Printf("Successfully published profile update to relay: %s\n", r.URL)
-		} else {
-			fmt.Printf("Failed to publish to relay %s: %v\n", r.URL, err)
-		}
+		return nil
 	}
-	return nil
+	return fmt.Errorf("failed to publish profile update to any relay")
 }
 
 // registerAsHandler registers the app as a handler for specific kinds.
@@ -1175,26 +1191,18 @@ func registerAsHandler(privateKey, publicKey string, kinds []int, platforms map[
 		return fmt.Errorf("failed to sign handler registration event: %w", err)
 	}
 
-	// Publish the event to relays
-	ctx := context.Background()
+	// Publish the event to relays using helper
 	relays := getRelayList()
-	pool := nostr.NewSimplePool(ctx)
-	for _, relayURL := range relays {
-		relay, err := pool.EnsureRelay(relayURL)
-		if err != nil {
-			log.Printf("Failed to connect to relay %s: %v", relayURL, err)
-			continue
-		}
+	result := publishToRelays(&event, relays)
 
-		if err := relay.Publish(ctx, event); err != nil {
-			log.Printf("Failed to publish to relay %s: %v", relay.URL, err)
-		} else {
-			fmt.Printf("Handler registration published to relay: %s\n", relay.URL)
+	if result.SuccessCount > 0 {
+		fmt.Printf("Handler registration published to %d/%d relays\n", result.SuccessCount, len(relays))
+		if len(result.FailedRelays) > 0 {
+			log.Printf("Failed relays: %v", result.FailedRelays)
 		}
-
-		relay.Close()
+		return nil
 	}
-	return nil
+	return fmt.Errorf("failed to publish handler registration to any relay")
 }
 
 // recommendApp publishes a recommendation for an app for a specific kind.
@@ -1216,26 +1224,18 @@ func recommendApp(privateKey, publicKey, handlerPubKey, handlerDIdentifier strin
 		return fmt.Errorf("failed to sign app recommendation event: %w", err)
 	}
 
-	// Publish the event to relays
-	ctx := context.Background()
+	// Publish the event to relays using helper
 	relays := getRelayList()
-	pool := nostr.NewSimplePool(ctx)
-	for _, relayURL := range relays {
-		relay, err := pool.EnsureRelay(relayURL)
-		if err != nil {
-			log.Printf("Failed to connect to relay %s: %v", relayURL, err)
-			continue
-		}
+	result := publishToRelays(&event, relays)
 
-		if err := relay.Publish(ctx, event); err != nil {
-			log.Printf("Failed to publish to relay %s: %v", relay.URL, err)
-		} else {
-			fmt.Printf("App recommendation published to relay: %s\n", relay.URL)
+	if result.SuccessCount > 0 {
+		fmt.Printf("App recommendation published to %d/%d relays\n", result.SuccessCount, len(relays))
+		if len(result.FailedRelays) > 0 {
+			log.Printf("Failed relays: %v", result.FailedRelays)
 		}
-
-		relay.Close()
+		return nil
 	}
-	return nil
+	return fmt.Errorf("failed to publish app recommendation to any relay")
 }
 
 // findHandlers queries relays for handlers of a specific kind.
@@ -2234,25 +2234,19 @@ func runPublishCommand(sk, pk, content, relaysRaw string) error {
 	}
 
 	return withLoading("Publishing post", func() error {
-		ctx := context.Background()
-		pool := nostr.NewSimplePool(ctx)
-		for _, relayURL := range relays {
-			relay, err := pool.EnsureRelay(relayURL)
-			if err != nil {
-				log.Printf("Failed to add relay %s: %v", relayURL, err)
-				continue
-			}
-			_ = relay
+		result := publishToRelays(&event, relays)
+
+		// Print results
+		for i := 0; i < result.SuccessCount; i++ {
+			fmt.Printf("Successfully published to relay\n")
 		}
-		pool.Relays.Range(func(key string, relay *nostr.Relay) bool {
-			err := relay.Publish(ctx, event)
-			if err == nil {
-				fmt.Printf("Successfully published to relay: %s\n", relay.URL)
-			} else {
-				fmt.Printf("Failed to publish to relay %s: %v\n", relay.URL, err)
-			}
-			return true
-		})
+		for _, failedURL := range result.FailedRelays {
+			fmt.Printf("Failed to publish to relay %s\n", failedURL)
+		}
+
+		if result.SuccessCount == 0 {
+			return fmt.Errorf("failed to publish to any relay")
+		}
 		return nil
 	})
 }
