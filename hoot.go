@@ -27,6 +27,7 @@ import (
 	"golang.org/x/crypto/nacl/secretbox"
 	"golang.org/x/crypto/scrypt"
 	"golang.org/x/term"
+	"sync"
 )
 
 const (
@@ -108,11 +109,51 @@ var defaultRelays = []string{
 }
 
 // Global NIP-46 session and local key
-var nip46Session *nip46.Session
-var localPrivateKey string
+var (
+	nip46Session   *nip46.Session
+	localPrivateKey string
+	eventCache     *cache.Cache
 
-// Global cache instance for improved performance
-var eventCache *cache.Cache
+	// Mutex for thread-safe access to global variables
+	globalMutex sync.RWMutex
+)
+
+// Thread-safe getters for global variables
+func getNIP46Session() *nip46.Session {
+	globalMutex.RLock()
+	defer globalMutex.RUnlock()
+	return nip46Session
+}
+
+func setNIP46Session(s *nip46.Session) {
+	globalMutex.Lock()
+	defer globalMutex.Unlock()
+	nip46Session = s
+}
+
+func getLocalPrivateKey() string {
+	globalMutex.RLock()
+	defer globalMutex.RUnlock()
+	return localPrivateKey
+}
+
+func setLocalPrivateKey(k string) {
+	globalMutex.Lock()
+	defer globalMutex.Unlock()
+	localPrivateKey = k
+}
+
+func getEventCache() *cache.Cache {
+	globalMutex.RLock()
+	defer globalMutex.RUnlock()
+	return eventCache
+}
+
+func setEventCache(c *cache.Cache) {
+	globalMutex.Lock()
+	defer globalMutex.Unlock()
+	eventCache = c
+}
 
 // Updated StoredKey includes the password hash.
 type StoredKey struct {
@@ -627,9 +668,10 @@ func listPosts(pubKey string) error {
 func getFeedPosts() ([]tui.FeedPost, error) {
 	// Try to get cached events first
 	var cachedEvents []*nostr.Event
-	if eventCache != nil {
+	cachedCache := getEventCache()
+	if cachedCache != nil {
 		// Get the most recent cached events
-		cachedEvents, _ = eventCache.GetEventsByPubKey("", 1, 20)
+		cachedEvents, _ = cachedCache.GetEventsByPubKey("", 1, 20)
 	}
 
 	relays := getRelayList()
@@ -668,8 +710,9 @@ func getFeedPosts() ([]tui.FeedPost, error) {
 		}
 		for ev := range evCh {
 			// Cache the event for future use (24 hour TTL)
-			if eventCache != nil {
-				eventCache.StoreEvent(ev, 24*time.Hour)
+			cachedCache := getEventCache()
+			if cachedCache != nil {
+				cachedCache.StoreEvent(ev, 24*time.Hour)
 			}
 
 			if !eventIDs[ev.ID] {
@@ -841,7 +884,7 @@ func publishPostTUI(content string) error {
 	relays := getRelayList()
 
 	// If NIP-46 session is active, use it
-	if nip46Session != nil {
+	if nip46Session := getNIP46Session(); nip46Session != nil {
 		event.PubKey = nip46Session.UserPublicKey
 		ctx, cancel := context.WithTimeout(context.Background(), timeouts.SignEvent)
 		defer cancel()
@@ -850,11 +893,12 @@ func publishPostTUI(content string) error {
 		}
 	} else {
 		// Use local key
-		if localPrivateKey == "" {
+		if localPrivateKey := getLocalPrivateKey(); localPrivateKey == "" {
 			return fmt.Errorf("no active session or local key")
+		} else {
+			event.PubKey, _ = nostr.GetPublicKey(localPrivateKey)
+			event.Sign(localPrivateKey)
 		}
-		event.PubKey, _ = nostr.GetPublicKey(localPrivateKey)
-		event.Sign(localPrivateKey)
 	}
 
 	success := 0
@@ -1436,7 +1480,7 @@ func main() {
 					return "", "", err
 				}
 				// Cache for posting
-				localPrivateKey = sk
+				setLocalPrivateKey(sk)
 				return sk, pk, nil
 			},
 			OnResetKey: func() error {
@@ -1462,7 +1506,7 @@ func main() {
 				}
 
 				// Cache for posting
-				localPrivateKey = sk
+				setLocalPrivateKey(sk)
 				return pk, nil
 			},
 			OnPost:        publishPostTUI,
@@ -1490,23 +1534,24 @@ func main() {
 				if err != nil {
 					return "", err
 				}
-				nip46Session = session
+				setNIP46Session(session)
 				return uri, nil
 			},
 			OnCheckQR: func() (string, error) {
-				if nip46Session == nil {
+				if nip46Session := getNIP46Session(); nip46Session == nil {
 					return "", fmt.Errorf("session not initialized")
 				}
 				// Wait for connection
 				ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 				defer cancel()
 
-				if err := nip46Session.WaitForConnection(ctx); err != nil {
+				session := getNIP46Session()
+				if err := session.WaitForConnection(ctx); err != nil {
 					return "", err
 				}
 
 				// Get public key
-				pubKey, err := nip46Session.GetPublicKey(ctx)
+				pubKey, err := session.GetPublicKey(ctx)
 				if err != nil {
 					return "", err
 				}
@@ -1536,7 +1581,7 @@ func main() {
 					return "", "", err
 				}
 				// Cache for posting
-				localPrivateKey = privKey
+				setLocalPrivateKey(privKey)
 				return privKey, pubKey, nil
 			},
 			OnAddProfile: func(name, nsec, password string) (string, error) {
@@ -1546,7 +1591,7 @@ func main() {
 				}
 				// Cache the private key for posting
 				_, decoded, _ := nip19.Decode(nsec)
-				localPrivateKey = decoded.(string)
+				setLocalPrivateKey(decoded.(string))
 				return profile.PublicKey, nil
 			},
 			OnDeleteProfile: DeleteProfile,
