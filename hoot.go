@@ -705,17 +705,26 @@ func listPosts(pubKey string) error {
 			relay.Close()
 			continue
 		}
-		// Iterate over the returned channel
+		// Iterate over the returned channel with context cancellation
 	loop:
-		for ev := range evCh {
-			// Validate timestamp to prevent overflow/invalid data
-			if err := ValidateTimestamp(int64(ev.CreatedAt)); err != nil {
-				log.Printf("Skipping event with invalid timestamp: %v", err)
-				continue
-			}
-			events = append(events, *ev)
-			if len(events) >= 4 {
-				break loop
+		for {
+			select {
+			case <-ctx.Done():
+				relay.Close()
+				return ctx.Err()
+			case ev, ok := <-evCh:
+				if !ok {
+					break loop
+				}
+				// Validate timestamp to prevent overflow/invalid data
+				if err := ValidateTimestamp(int64(ev.CreatedAt)); err != nil {
+					log.Printf("Skipping event with invalid timestamp: %v", err)
+					continue
+				}
+				events = append(events, *ev)
+				if len(events) >= 4 {
+					break loop
+				}
 			}
 		}
 		relay.Close()
@@ -780,27 +789,38 @@ func getFeedPosts() ([]tui.FeedPost, error) {
 			relay.Close()
 			continue
 		}
-		for ev := range evCh {
-			// Validate timestamp to prevent overflow/invalid data
-			if err := ValidateTimestamp(int64(ev.CreatedAt)); err != nil {
-				continue
-			}
-			// Cache the event for future use (24 hour TTL)
-			cachedCache := getEventCache()
-			if cachedCache != nil {
-				cachedCache.StoreEvent(ev, 24*time.Hour)
-			}
+		// Iterate with context cancellation
+	loopFeed:
+		for {
+			select {
+			case <-ctx.Done():
+				relay.Close()
+				return nil, ctx.Err()
+			case ev, ok := <-evCh:
+				if !ok {
+					break loopFeed
+				}
+				// Validate timestamp to prevent overflow/invalid data
+				if err := ValidateTimestamp(int64(ev.CreatedAt)); err != nil {
+					continue
+				}
+				// Cache the event for future use (24 hour TTL)
+				cachedCache := getEventCache()
+				if cachedCache != nil {
+					cachedCache.StoreEvent(ev, 24*time.Hour)
+				}
 
-			if !eventIDs[ev.ID] {
-				eventIDs[ev.ID] = true
-				posts = append(posts, tui.FeedPost{
-					Author:    ev.PubKey,
-					Content:   ev.Content,
-					CreatedAt: time.Unix(int64(ev.CreatedAt), 0).Format("Jan 2 15:04"),
-				})
-			}
-			if len(posts) >= 20 {
-				break
+				if !eventIDs[ev.ID] {
+					eventIDs[ev.ID] = true
+					posts = append(posts, tui.FeedPost{
+						Author:    ev.PubKey,
+						Content:   ev.Content,
+						CreatedAt: time.Unix(int64(ev.CreatedAt), 0).Format("Jan 2 15:04"),
+					})
+				}
+				if len(posts) >= 20 {
+					break loopFeed
+				}
 			}
 		}
 		relay.Close()
@@ -840,54 +860,65 @@ func getDMs(privateKey string) ([]tui.FeedPost, error) {
 			continue
 		}
 
-		for ev := range evCh {
-			// Validate timestamp to prevent overflow/invalid data
-			if err := ValidateTimestamp(int64(ev.CreatedAt)); err != nil {
-				continue
-			}
-			// Check if this DM is for us or from us
-			isForUs := false
-			isFromUs := ev.PubKey == publicKey
-
-			for _, tag := range ev.Tags {
-				if len(tag) > 1 && tag[0] == "p" && tag[1] == publicKey {
-					isForUs = true
-					break
+		// Iterate with context cancellation
+	loopDMs:
+		for {
+			select {
+			case <-ctx.Done():
+				relay.Close()
+				return nil, ctx.Err()
+			case ev, ok := <-evCh:
+				if !ok {
+					break loopDMs
 				}
-			}
+				// Validate timestamp to prevent overflow/invalid data
+				if err := ValidateTimestamp(int64(ev.CreatedAt)); err != nil {
+					continue
+				}
+				// Check if this DM is for us or from us
+				isForUs := false
+				isFromUs := ev.PubKey == publicKey
 
-			if !isForUs && !isFromUs {
-				continue // Skip messages not involving us
-			}
-
-			// Decrypt the DM content
-			decrypted, err := nip04.Decrypt(ev.Content, []byte(privateKey))
-			if err != nil {
-				continue // Skip if we can't decrypt
-			}
-
-			direction := "from"
-			if isFromUs {
-				if recipient := ev.Tags.GetFirst([]string{"p"}); recipient != nil && len(*recipient) > 1 {
-					pubKeyPart := (*recipient)[1]
-					if len(pubKeyPart) >= 8 {
-						direction = fmt.Sprintf("to %s", pubKeyPart[:8]+"...")
-					} else if len(pubKeyPart) > 0 {
-						direction = fmt.Sprintf("to %s", pubKeyPart)
+				for _, tag := range ev.Tags {
+					if len(tag) > 1 && tag[0] == "p" && tag[1] == publicKey {
+						isForUs = true
+						break
 					}
 				}
-			} else {
-				direction = "from"
-			}
 
-			dms = append(dms, tui.FeedPost{
-				Author:    ev.PubKey,
-				Content:   fmt.Sprintf("[DM %s]: %s", direction, decrypted),
-				CreatedAt: time.Unix(int64(ev.CreatedAt), 0).Format("Jan 2 15:04"),
-			})
+				if !isForUs && !isFromUs {
+					continue // Skip messages not involving us
+				}
 
-			if len(dms) >= 50 {
-				break
+				// Decrypt the DM content
+				decrypted, err := nip04.Decrypt(ev.Content, []byte(privateKey))
+				if err != nil {
+					continue // Skip if we can't decrypt
+				}
+
+				direction := "from"
+				if isFromUs {
+					if recipient := ev.Tags.GetFirst([]string{"p"}); recipient != nil && len(*recipient) > 1 {
+						pubKeyPart := (*recipient)[1]
+						if len(pubKeyPart) >= 8 {
+							direction = fmt.Sprintf("to %s", pubKeyPart[:8]+"...")
+						} else if len(pubKeyPart) > 0 {
+							direction = fmt.Sprintf("to %s", pubKeyPart)
+						}
+					}
+				} else {
+					direction = "from"
+				}
+
+				dms = append(dms, tui.FeedPost{
+					Author:    ev.PubKey,
+					Content:   fmt.Sprintf("[DM %s]: %s", direction, decrypted),
+					CreatedAt: time.Unix(int64(ev.CreatedAt), 0).Format("Jan 2 15:04"),
+				})
+
+				if len(dms) >= 50 {
+					break loopDMs
+				}
 			}
 		}
 		relay.Close()
@@ -923,28 +954,39 @@ func getReactions(eventID string) ([]tui.FeedPost, error) {
 			continue
 		}
 
-		for ev := range evCh {
-			// Validate timestamp to prevent overflow/invalid data
-			if err := ValidateTimestamp(int64(ev.CreatedAt)); err != nil {
-				continue
-			}
-			var content string
-			if ev.Kind == 7 {
-				// Reaction
-				content = fmt.Sprintf("[Reacted: %s]", ev.Content)
-			} else {
-				// Reply
-				content = ev.Content
-			}
+		// Iterate with context cancellation
+	loopReactions:
+		for {
+			select {
+			case <-ctx.Done():
+				relay.Close()
+				return nil, ctx.Err()
+			case ev, ok := <-evCh:
+				if !ok {
+					break loopReactions
+				}
+				// Validate timestamp to prevent overflow/invalid data
+				if err := ValidateTimestamp(int64(ev.CreatedAt)); err != nil {
+					continue
+				}
+				var content string
+				if ev.Kind == 7 {
+					// Reaction
+					content = fmt.Sprintf("[Reacted: %s]", ev.Content)
+				} else {
+					// Reply
+					content = ev.Content
+				}
 
-			reactions = append(reactions, tui.FeedPost{
-				Author:    ev.PubKey,
-				Content:   content,
-				CreatedAt: time.Unix(int64(ev.CreatedAt), 0).Format("Jan 2 15:04"),
-			})
+				reactions = append(reactions, tui.FeedPost{
+					Author:    ev.PubKey,
+					Content:   content,
+					CreatedAt: time.Unix(int64(ev.CreatedAt), 0).Format("Jan 2 15:04"),
+				})
 
-			if len(reactions) >= 20 {
-				break
+				if len(reactions) >= 20 {
+					break loopReactions
+				}
 			}
 		}
 		relay.Close()
@@ -1045,13 +1087,24 @@ func getProfile(pubKey string) error {
 			relay.Close()
 			continue
 		}
-		for ev := range evCh {
-			// Validate timestamp
-			if err := ValidateTimestamp(int64(ev.CreatedAt)); err != nil {
-				continue
+		// Iterate with context cancellation
+	loopProfile:
+		for {
+			select {
+			case <-ctx.Done():
+				relay.Close()
+				return ctx.Err()
+			case ev, ok := <-evCh:
+				if !ok {
+					break loopProfile
+				}
+				// Validate timestamp
+				if err := ValidateTimestamp(int64(ev.CreatedAt)); err != nil {
+					continue
+				}
+				profileEvent = ev
+				break loopProfile
 			}
-			profileEvent = ev
-			break
 		}
 		relay.Close()
 		if profileEvent != nil {
@@ -1220,31 +1273,42 @@ func findHandlers(kind int) ([]struct {
 			continue
 		}
 
-		for ev := range evCh {
-			// Validate timestamp to prevent overflow/invalid data
-			if err := ValidateTimestamp(int64(ev.CreatedAt)); err != nil {
-				continue
-			}
-			handler := struct {
-				PubKey         string
-				SupportedKinds []int
-				Platforms      map[string]string
-			}{
-				PubKey:    ev.PubKey,
-				Platforms: make(map[string]string),
-			}
-
-			for _, tag := range ev.Tags {
-				if tag[0] == "k" {
-					kind, err := strconv.Atoi(tag[1])
-					if err == nil {
-						handler.SupportedKinds = append(handler.SupportedKinds, kind)
-					}
-				} else if tag[0] == "p" && len(tag) > 2 {
-					handler.Platforms[tag[1]] = tag[2]
+		// Iterate with context cancellation
+	loopHandlers:
+		for {
+			select {
+			case <-ctx.Done():
+				relay.Close()
+				return nil, ctx.Err()
+			case ev, ok := <-evCh:
+				if !ok {
+					break loopHandlers
 				}
+				// Validate timestamp to prevent overflow/invalid data
+				if err := ValidateTimestamp(int64(ev.CreatedAt)); err != nil {
+					continue
+				}
+				handler := struct {
+					PubKey         string
+					SupportedKinds []int
+					Platforms      map[string]string
+				}{
+					PubKey:    ev.PubKey,
+					Platforms: make(map[string]string),
+				}
+
+				for _, tag := range ev.Tags {
+					if tag[0] == "k" {
+						kind, err := strconv.Atoi(tag[1])
+						if err == nil {
+							handler.SupportedKinds = append(handler.SupportedKinds, kind)
+						}
+					} else if tag[0] == "p" && len(tag) > 2 {
+						handler.Platforms[tag[1]] = tag[2]
+					}
+				}
+				handlers = append(handlers, handler)
 			}
-			handlers = append(handlers, handler)
 		}
 		relay.Close()
 	}
