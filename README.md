@@ -26,12 +26,9 @@ A simple command-line tool for using the Nostr network. It keeps your keys safe,
 | [NIP-65](https://github.com/nostr-protocol/nips/blob/master/65.md) | Relay List Metadata | 🔲 Not supported |
 | [NIP-89](https://github.com/nostr-protocol/nips/blob/master/89.md) | Recommended Application Handlers | ✅ Supported |
 
-## Prerequisites
-
-- Go 1.19 or later
-- Git
-
 ## Installation
+
+### From Source
 
 1. Clone the repository:
 
@@ -40,27 +37,58 @@ A simple command-line tool for using the Nostr network. It keeps your keys safe,
    cd hoot
    ```
 
-2. Install dependencies:
+2. Build the binary:
 
    ```bash
-   go mod download
+   make build
+   # or: go build -o hoot .
    ```
 
-3. Build the binary:
+3. Install to PATH:
 
    ```bash
-   go build -o hoot
+   sudo make install
+   # or: sudo mv hoot /usr/local/bin/
    ```
 
-4. (Optional) Move the binary to your PATH:
+### Homebrew (macOS/Linux)
 
-   ```bash
-   # Linux/macOS
-   sudo mv hoot /usr/local/bin/
+```bash
+brew tap oth-body/hoot
+brew install hoot
+```
 
-   # Windows
-   # Move hoot.exe to a directory in your PATH
-   ```
+### AUR (Arch Linux)
+
+```bash
+yay -S hoot-bin
+# or: paru -S hoot-bin
+```
+
+### Download Binary
+
+Download the latest release for your platform from [GitHub Releases](https://github.com/oth-body/hoot/releases):
+
+```bash
+# Linux amd64
+curl -sL https://github.com/oth-body/hoot/releases/latest/download/hoot-linux-amd64.tar.gz | tar xz
+sudo mv hoot /usr/local/bin/
+
+# macOS arm64 (M1/M2)
+curl -sL https://github.com/oth-body/hoot/releases/latest/download/hoot-darwin-arm64.tar.gz | tar xz
+sudo mv hoot /usr/local/bin/
+```
+
+### Self-Update
+
+If you already have hoot installed:
+
+```bash
+hoot -check-update  # Check for updates
+hoot -update        # Update to latest version
+```
+
+## Prerequisites
 
 ## Configuration
 

@@ -1,0 +1,21 @@
+# Maintainer: oth-body
+pkgname=hoot-bin
+pkgver=0.0.4
+pkgrel=1
+pkgdesc="A Nostr CLI client with TUI support"
+arch=('x86_64' 'aarch64')
+url="https://github.com/oth-body/hoot"
+license=('MIT')
+depends=('glibc')
+provides=('hoot')
+conflicts=('hoot' 'hoot-git')
+source_x86_64=("https://github.com/oth-body/hoot/releases/download/v${pkgver}/hoot-linux-amd64.tar.gz")
+source_aarch64=("https://github.com/oth-body/hoot/releases/download/v${pkgver}/hoot-linux-arm64.tar.gz")
+sha256sums_x86_64=('SKIP')
+sha256sums_aarch64=('SKIP')
+
+package() {
+    install -Dm755 hoot "${pkgdir}/usr/bin/hoot"
+    install -Dm644 LICENSE "${pkgdir}/usr/share/licenses/${pkgname}/LICENSE"
+    install -Dm644 README.md "${pkgdir}/usr/share/doc/${pkgname}/README.md"
+}
