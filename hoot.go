@@ -38,7 +38,7 @@ var (
 
 // Config directory paths
 const (
-	appName = "nostr-cli"
+	appName = "hoot"
 )
 
 // getConfigDir returns the config directory based on the OS
