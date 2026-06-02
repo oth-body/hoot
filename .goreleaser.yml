@@ -1,0 +1,173 @@
+# .goreleaser.yml
+
+# This is an example .goreleaser.yml file with some sensible defaults.
+# Make sure to check the documentation at https://goreleaser.com
+
+# The lines below are called `modelines`. See `:help modeline`
+# feel free to remove those if you don't want/need to use them.
+# yaml-language-server: $schema=https://goreleaser.com/static/schema.json
+# vim: set ts=2 sw=2 tw=0 fojcnrvlj
+
+# Before hooks
+# before:
+#   hooks:
+#     # You may use this if you need a custom build script
+#     - go generate ./...
+
+# Build configuration
+builds:
+  - env:
+      CGO_ENABLED: 0
+    goos:
+      - linux
+      - darwin
+      - windows
+    goarch:
+      - amd64
+      - arm64
+      - "386"
+    ignore:
+      - goos: windows
+        goarch: "386"
+      - goos: windows
+        goarch: arm64
+    binary: hoot
+    ldflags:
+      - -s -w
+      - -X main.Version={{.Version}}
+      - -X main.Commit={{.Commit}}
+      - -X main.Date={{.Date}}
+
+# Archive configuration
+archives:
+  - format: tar.gz
+    # this name template makes the OS and Arch compatible with the results of `uname`.
+    name_template: >-
+      hoot_{{ .Version }}_{{ .Os }}_{{ .Arch }}
+    files:
+      - LICENSE*
+      - README*
+      - CHANGELOG*
+
+# Snapcraft configuration
+snapcrafts:
+  - name: hoot
+    title: Hoot - Nostr CLI Tool
+    summary: A CLI tool for Nostr posting and interaction
+    description: |
+      Hoot is a command-line interface for Nostr, the decentralized social network.
+      Post messages, manage your profile, and interact with the Nostr ecosystem.
+    grade: stable
+    confinement: classic
+    base: core22
+    apps:
+      hoot:
+        command: bin/hoot
+
+# Homebrew configuration
+brews:
+  - name: hoot
+    homepage: https://github.com/oth-body/hoot
+    license: MIT
+    description: "A CLI tool for Nostr posting and interaction"
+    install: |
+      bin.install "hoot"
+    test: |
+      system "#{bin}/hoot", "version"
+
+# Scoop configuration
+scoops:
+  - name: hoot
+    homepage: https://github.com/oth-body/hoot
+    license: MIT
+    description: "A CLI tool for Nostr posting and interaction"
+    url_template: https://github.com/oth-body/hoot/releases/download/{{ .Tag }}/hoot_{{ .Version }}_{{ .Os }}_{{ .Arch }}.tar.gz
+    persist:
+    - config
+
+# AUR configuration
+aur:
+  - name: hoot-bin
+    homepage: https://github.com/oth-body/hoot
+    description: "A CLI tool for Nostr posting and interaction"
+    license: MIT
+    depends:
+      - glibc
+    provides:
+      - hoot
+    conflicts:
+      - hoot-git
+    package: |
+      # bin
+      install -Dm755 "./hoot" "${pkgdir}/usr/bin/hoot"
+      
+      # license
+      install -Dm644 "./LICENSE" "${pkgdir}/usr/share/licenses/hoot/LICENSE"
+      
+      # docs
+      install -Dm644 "./README.md" -t "${pkgdir}/usr/share/doc/${pkgname}/"
+
+# DEB/RPM configuration
+nfpms:
+  - package_name: hoot
+    homepage: https://github.com/oth-body/hoot
+    description: "A CLI tool for Nostr posting and interaction"
+    license: MIT
+    maintainer: oth-body <54001179+oth-body@users.noreply.github.com>
+    formats:
+      - deb
+      - rpm
+    dependencies:
+      - glibc
+
+# GitHub release configuration
+release:
+  github:
+    owner: oth-body
+    name: hoot
+  draft: false
+  prerelease: false
+  mode: append
+
+# Announce to Twitter/X
+announce:
+  twitter:
+    enabled: true
+    message_template: "Hoot {{ .Version }} is out! 🦉 A CLI tool for Nostr posting and interaction. {{ .ReleaseURL }}"
+
+# Checksum configuration
+checksum:
+  name_template: "checksums.txt"
+  algorithm: sha256
+
+# Changelog configuration
+changelog:
+  sort: asc
+  filters:
+    exclude:
+      - "^docs:"
+      - "^test:"
+      - Merge pull request
+      - Merge branch
+  groups:
+    - title: Features
+      regexp: "^.*feat[(\\w)]*:+.*$"
+      order: 0
+    - title: "Bug Fixes"
+      regexp: "^.*fix[(\\w)]*:+.*$"
+      order: 1
+    - title: "Documentation"
+      regexp: "^.*docs[(\\w)]*:+.*$"
+      order: 2
+    - title: "Chores"
+      regexp: "^.*chore[(\\w)]*:+.*$"
+      order: 3
+
+# Milestone configuration
+milestones:
+  # You can override the repository. Useful when you're using goreleaser in a fork.
+  # repo:
+  #   owner: goreleaser
+  #   name: goreleaser
+  close_on_create: true
+  fail_on_error: false
