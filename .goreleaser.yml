@@ -8,6 +8,8 @@
 # yaml-language-server: $schema=https://goreleaser.com/static/schema.json
 # vim: set ts=2 sw=2 tw=0 fojcnrvlj
 
+version: 2
+
 # Before hooks
 # before:
 #   hooks:
@@ -17,7 +19,7 @@
 # Build configuration
 builds:
   - env:
-      CGO_ENABLED: 0
+      - CGO_ENABLED=0
     goos:
       - linux
       - darwin
@@ -40,7 +42,8 @@ builds:
 
 # Archive configuration
 archives:
-  - format: tar.gz
+  - formats:
+      - tar.gz
     # this name template makes the OS and Arch compatible with the results of `uname`.
     name_template: >-
       hoot_{{ .Version }}_{{ .Os }}_{{ .Arch }}
@@ -64,17 +67,6 @@ snapcrafts:
       hoot:
         command: bin/hoot
 
-# Homebrew configuration
-brews:
-  - name: hoot
-    homepage: https://github.com/oth-body/hoot
-    license: MIT
-    description: "A CLI tool for Nostr posting and interaction"
-    install: |
-      bin.install "hoot"
-    test: |
-      system "#{bin}/hoot", "version"
-
 # Scoop configuration
 scoops:
   - name: hoot
@@ -86,7 +78,7 @@ scoops:
     - config
 
 # AUR configuration
-aur:
+aurs:
   - name: hoot-bin
     homepage: https://github.com/oth-body/hoot
     description: "A CLI tool for Nostr posting and interaction"
@@ -151,23 +143,14 @@ changelog:
       - Merge branch
   groups:
     - title: Features
-      regexp: "^.*feat[(\\w)]*:+.*$"
+      regexp: "^.*feat[(\\\\w)]*:+.*$"
       order: 0
     - title: "Bug Fixes"
-      regexp: "^.*fix[(\\w)]*:+.*$"
+      regexp: "^.*fix[(\\\\w)]*:+.*$"
       order: 1
     - title: "Documentation"
-      regexp: "^.*docs[(\\w)]*:+.*$"
+      regexp: "^.*docs[(\\\\w)]*:+.*$"
       order: 2
     - title: "Chores"
-      regexp: "^.*chore[(\\w)]*:+.*$"
+      regexp: "^.*chore[(\\\\w)]*:+.*$"
       order: 3
-
-# Milestone configuration
-milestones:
-  # You can override the repository. Useful when you're using goreleaser in a fork.
-  # repo:
-  #   owner: goreleaser
-  #   name: goreleaser
-  close_on_create: true
-  fail_on_error: false
