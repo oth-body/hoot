@@ -61,11 +61,11 @@ func (r *CommandRegistry) Help(commandName string) {
 	fmt.Printf("Hoot - Nostr CLI Tool\n\n")
 	fmt.Printf("Usage: hoot <command> [options]\n\n")
 	fmt.Printf("Commands:\n")
-	
+
 	for _, cmd := range r.commands {
 		fmt.Printf("  %-25s %s\n", cmd.Name, cmd.Description)
 	}
-	
+
 	fmt.Printf("\nUse 'hoot help <command>' for more information on a specific command.\n")
 	fmt.Printf("Use 'hoot help' to show this message.\n")
 }
@@ -78,13 +78,13 @@ func (r *CommandRegistry) ParseAndExecute(args []string) bool {
 
 	commandName := args[0]
 	cmd := r.Get(commandName)
-	
+
 	if cmd == nil {
 		// Check if it's a flag (backwards compatibility)
 		if strings.HasPrefix(commandName, "-") {
 			return false // Fall back to flag parsing
 		}
-		
+
 		fmt.Printf("Unknown command: %s\n", commandName)
 		fmt.Printf("Use 'hoot help' to see available commands.\n")
 		os.Exit(1)
@@ -98,7 +98,7 @@ func (r *CommandRegistry) ParseAndExecute(args []string) bool {
 		os.Exit(1)
 		return true
 	}
-	
+
 	if cmd.MaxArgs > 0 && len(args)-1 > cmd.MaxArgs {
 		fmt.Printf("Error: %s accepts at most %d argument(s)\n", cmd.Name, cmd.MaxArgs)
 		fmt.Printf("Usage: hoot %s\n", cmd.Usage)
@@ -242,10 +242,10 @@ func handleTip(args []string) error {
 	if len(args) < 2 {
 		return fmt.Errorf("tip requires an amount and recipient")
 	}
-	
+
 	amount := args[0]
 	var recipient string
-	
+
 	// Check if --user flag is used
 	for i := 1; i < len(args); i++ {
 		if args[i] == "--user" && i+1 < len(args) {
@@ -253,12 +253,12 @@ func handleTip(args []string) error {
 			break
 		}
 	}
-	
+
 	// If no --user flag, assume second argument is recipient
 	if recipient == "" {
 		recipient = args[1]
 	}
-	
+
 	return runTipCommand(amount, recipient)
 }
 
@@ -282,7 +282,7 @@ func handleUpdate(args []string) error {
 			break
 		}
 	}
-	
+
 	if checkOnly {
 		return checkForUpdate()
 	}
@@ -295,7 +295,7 @@ func handleHelp(args []string) error {
 	if len(args) > 0 {
 		commandName = args[0]
 	}
-	
+
 	registry := NewCommandRegistry()
 	registerCommands(registry)
 	registry.Help(commandName)
@@ -423,6 +423,6 @@ func registerCommands(registry *CommandRegistry) {
 func ExecuteCommand() bool {
 	registry := NewCommandRegistry()
 	registerCommands(registry)
-	
+
 	return registry.ParseAndExecute(os.Args[1:])
 }

@@ -2,7 +2,11 @@ package main
 
 import (
 	"bufio"
+	"crypto/aes"
+	"crypto/cipher"
 	"crypto/rand"
+	"crypto/sha256"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	flag "flag"
@@ -22,12 +26,16 @@ import (
 	"golang.org/x/crypto/ssh/terminal"
 )
 
-// Global variables as mentioned in requirements
+// Build metadata. Release builds replace these values with Go ldflags.
 var (
+	Version = "dev"
+	Commit  = ""
+	Date    = ""
+
 	nip46Session    interface{}
 	localPrivateKey string
-	eventCache     *EventCache
-	timeouts       = struct {
+	eventCache      *EventCache
+	timeouts        = struct {
 		Connect time.Duration
 		Publish time.Duration
 	}{
@@ -83,79 +91,130 @@ func readPassword() (string, error) {
 func loadAndDecodeKey(password string) (string, string, error) {
 	configDir := getConfigDir()
 	keyFile := filepath.Join(configDir, "nostr_key.enc")
-	
+
 	// Check if key file exists
 	if _, err := os.Stat(keyFile); os.IsNotExist(err) {
 		return "", "", fmt.Errorf("no key file found")
 	}
-	
+
 	// Read encrypted key file
 	data, err := ioutil.ReadFile(keyFile)
 	if err != nil {
 		return "", "", err
 	}
-	
-	// In a real implementation, we would decrypt the key here
-	// For this example, we'll assume the key is stored as hex
-	privKey := strings.TrimSpace(string(data))
-	
+
+	privKey, err := decryptKey(strings.TrimSpace(string(data)), password)
+	if err != nil {
+		return "", "", err
+	}
+
 	// Validate the key
 	if len(privKey) != 64 {
 		return "", "", fmt.Errorf("invalid private key length")
 	}
-	
+
 	// Get public key
 	pubKey, _ := nostr.GetPublicKey(privKey)
-	
+
 	return privKey, pubKey, nil
 }
 
 // saveKey saves a private key with password encryption
 func saveKey(privKey, password string) error {
 	configDir := getConfigDir()
-	
+
 	// Create config directory if it doesn't exist
 	if err := os.MkdirAll(configDir, 0700); err != nil {
 		return err
 	}
-	
+
 	keyFile := filepath.Join(configDir, "nostr_key.enc")
-	
-	// In a real implementation, we would encrypt the key here
-	// For this example, we'll just save the hex key
-	return ioutil.WriteFile(keyFile, []byte(privKey), 0600)
+
+	ciphertext, err := encryptKey(privKey, password)
+	if err != nil {
+		return err
+	}
+	return ioutil.WriteFile(keyFile, []byte(ciphertext), 0600)
+}
+
+func passwordKey(password string) []byte {
+	sum := sha256.Sum256([]byte(password))
+	return sum[:]
+}
+
+func encryptKey(privKey, password string) (string, error) {
+	block, err := aes.NewCipher(passwordKey(password))
+	if err != nil {
+		return "", err
+	}
+	gcm, err := cipher.NewGCM(block)
+	if err != nil {
+		return "", err
+	}
+	nonce := make([]byte, gcm.NonceSize())
+	if _, err := rand.Read(nonce); err != nil {
+		return "", err
+	}
+	sealed := gcm.Seal(nonce, nonce, []byte(privKey), nil)
+	return "v1:" + base64.RawStdEncoding.EncodeToString(sealed), nil
+}
+
+func decryptKey(data, password string) (string, error) {
+	if !strings.HasPrefix(data, "v1:") {
+		return "", fmt.Errorf("unsupported key file format; re-import your nsec with `hoot login --key`")
+	}
+	raw, err := base64.RawStdEncoding.DecodeString(strings.TrimPrefix(data, "v1:"))
+	if err != nil {
+		return "", fmt.Errorf("invalid encrypted key: %w", err)
+	}
+	block, err := aes.NewCipher(passwordKey(password))
+	if err != nil {
+		return "", err
+	}
+	gcm, err := cipher.NewGCM(block)
+	if err != nil {
+		return "", err
+	}
+	if len(raw) < gcm.NonceSize() {
+		return "", fmt.Errorf("invalid encrypted key")
+	}
+	plain, err := gcm.Open(nil, raw[:gcm.NonceSize()], raw[gcm.NonceSize():], nil)
+	if err != nil {
+		return "", fmt.Errorf("incorrect password or corrupted key file")
+	}
+	return string(plain), nil
 }
 
 // isFirstRun checks if this is the first run of the application
 func isFirstRun() bool {
 	configDir := getConfigDir()
-	
+
 	// Check if config directory exists
 	if _, err := os.Stat(configDir); os.IsNotExist(err) {
 		return true
 	}
-	
+
 	// Check if any key files exist
 	keyFile := filepath.Join(configDir, "nostr_key.enc")
 	profilesFile := filepath.Join(configDir, "profiles.json")
 	guestFile := filepath.Join(configDir, ".guest")
-	
+
 	// If .guest file exists, it means user skipped the wizard
 	if _, err := os.Stat(guestFile); err == nil {
 		return false
 	}
-	
+
 	// Check if key file or profiles file exists
 	keyExists := false
 	if _, err := os.Stat(keyFile); err == nil {
 		keyExists = true
 	}
-	
+
 	profilesExists := false
 	if _, err := os.Stat(profilesFile); err == nil {
 		profilesExists = true
 	}
-	
+
 	return !keyExists && !profilesExists
 }
 
@@ -163,7 +222,7 @@ func isFirstRun() bool {
 func runFirstRunWizard() error {
 	color.Green("Welcome to Hoot - Nostr CLI Tool!")
 	color.Cyan("Let's get you set up with a Nostr identity.\n")
-	
+
 	prompt := promptui.Select{
 		Label: "Choose how to set up your Nostr identity",
 		Items: []string{
@@ -174,7 +233,7 @@ func runFirstRunWizard() error {
 		},
 		Size: 4,
 	}
-	
+
 	_, result, err := prompt.Run()
 	if err != nil {
 		return fmt.Errorf("prompt failed: %v", err)
@@ -189,39 +248,39 @@ func runFirstRunWizard() error {
 	case "Skip for now":
 		return handleSkipWizard()
 	}
-	
+
 	return nil
 }
 
 // handleGenerateKey handles generating a new key
 func handleGenerateKey() error {
 	color.Yellow("Generating a new Nostr key pair...\n")
-	
+
 	privKeyBytes := make([]byte, 32)
 	if _, err := rand.Read(privKeyBytes); err != nil {
 		return fmt.Errorf("failed to generate private key: %v", err)
 	}
-	
+
 	privKey := hex.EncodeToString(privKeyBytes)
 	pubKey, _ := nostr.GetPublicKey(privKey)
-	
+
 	nsec, err := nip19.EncodePrivateKey(privKey)
 	if err != nil {
 		return fmt.Errorf("failed to encode nsec: %v", err)
 	}
-	
+
 	npub, err := nip19.EncodePublicKey(pubKey)
 	if err != nil {
 		return fmt.Errorf("failed to encode npub: %v", err)
 	}
-	
+
 	fmt.Printf("Your private key (nsec): %s\n", color.YellowString(nsec))
 	fmt.Printf("Your public key (npub): %s\n", color.CyanString(npub))
 	fmt.Println()
 	color.Red("IMPORTANT: Back up your private key! If you lose it, you lose access to your Nostr identity.")
-	
+
 	prompt := promptui.Prompt{
-		Label:     "Type 'backup' to confirm you've backed up your key",
+		Label: "Type 'backup' to confirm you've backed up your key",
 		Validate: func(input string) error {
 			if input != "backup" {
 				return fmt.Errorf("please type 'backup' to confirm")
@@ -229,38 +288,38 @@ func handleGenerateKey() error {
 			return nil
 		},
 	}
-	
+
 	_, err = prompt.Run()
 	if err != nil {
 		return fmt.Errorf("backup confirmation failed: %v", err)
 	}
-	
+
 	password, err := readPassword()
 	if err != nil {
 		return fmt.Errorf("password entry failed: %v", err)
 	}
-	
+
 	if err := saveKey(privKey, password); err != nil {
 		return fmt.Errorf("failed to save key: %v", err)
 	}
-	
+
 	color.Green("Key saved successfully!")
-	
+
 	// Offer to create a profile
 	selectPrompt := promptui.Select{
 		Label: "Would you like to create a profile now?",
 		Items: []string{"Yes", "No"},
 	}
-	
+
 	_, choice, err := selectPrompt.Run()
 	if err != nil {
 		return fmt.Errorf("profile creation prompt failed: %v", err)
 	}
-	
+
 	if choice == "Yes" {
 		return handleProfileCreation(privKey)
 	}
-	
+
 	return nil
 }
 
@@ -275,47 +334,47 @@ func handleImportKey() error {
 			return nil
 		},
 	}
-	
+
 	nsec, err := prompt.Run()
 	if err != nil {
 		return fmt.Errorf("nsec input failed: %v", err)
 	}
-	
+
 	// Decode nsec to get private key
 	_, privKey, err := nip19.Decode(nsec)
 	if err != nil {
 		return fmt.Errorf("failed to decode nsec: %v", err)
 	}
-	
+
 	// Convert to hex
 	privKeyHex := hex.EncodeToString(privKey.([]byte))
-	
+
 	password, err := readPassword()
 	if err != nil {
 		return fmt.Errorf("password entry failed: %v", err)
 	}
-	
+
 	if err := saveKey(privKeyHex, password); err != nil {
 		return fmt.Errorf("failed to save key: %v", err)
 	}
-	
+
 	color.Green("Key imported successfully!")
-	
+
 	// Offer to create a profile
 	selectPrompt := promptui.Select{
 		Label: "Would you like to create a profile now?",
 		Items: []string{"Yes", "No"},
 	}
-	
+
 	_, choice, err := selectPrompt.Run()
 	if err != nil {
 		return fmt.Errorf("profile creation prompt failed: %v", err)
 	}
-	
+
 	if choice == "Yes" {
 		return handleProfileCreation(privKeyHex)
 	}
-	
+
 	return nil
 }
 
@@ -329,21 +388,21 @@ func handleNIP46Connect() error {
 // handleSkipWizard handles skipping the wizard
 func handleSkipWizard() error {
 	configDir := getConfigDir()
-	
+
 	if err := os.MkdirAll(configDir, 0700); err != nil {
 		return fmt.Errorf("failed to create config directory: %v", err)
 	}
-	
+
 	guestFile := filepath.Join(configDir, ".guest")
 	if err := ioutil.WriteFile(guestFile, []byte("guest"), 0600); err != nil {
 		return fmt.Errorf("failed to create guest marker: %v", err)
 	}
-	
+
 	color.Yellow("Wizard skipped. You can set up your identity later with 'hoot login'.")
 	fmt.Println("Next steps:")
 	fmt.Println("  - Run 'hoot login' to set up your identity")
 	fmt.Println("  - Run 'hoot help' to see available commands")
-	
+
 	return nil
 }
 
@@ -352,47 +411,47 @@ func handleProfileCreation(privKey string) error {
 	prompt := promptui.Prompt{
 		Label: "Enter your name",
 	}
-	
+
 	name, err := prompt.Run()
 	if err != nil {
 		return fmt.Errorf("name input failed: %v", err)
 	}
-	
+
 	prompt = promptui.Prompt{
 		Label: "Enter your about (optional)",
 	}
-	
+
 	about, err := prompt.Run()
 	if err != nil {
 		return fmt.Errorf("about input failed: %v", err)
 	}
-	
+
 	// Create profile JSON
 	profile := map[string]string{
 		"name":  name,
 		"about": about,
 	}
-	
+
 	// In a real implementation, we would publish this to Nostr
 	// For now, just save it locally
 	configDir := getConfigDir()
 	profilesFile := filepath.Join(configDir, "profiles.json")
-	
+
 	profiles := map[string]interface{}{
 		"default": profile,
 	}
-	
+
 	profilesData, err := json.MarshalIndent(profiles, "", "  ")
 	if err != nil {
 		return fmt.Errorf("failed to marshal profiles: %v", err)
 	}
-	
+
 	if err := ioutil.WriteFile(profilesFile, profilesData, 0600); err != nil {
 		return fmt.Errorf("failed to save profiles: %v", err)
 	}
-	
+
 	color.Green("Profile created successfully!")
-	
+
 	return nil
 }
 
@@ -403,7 +462,7 @@ func runPublishCommand(message string) error {
 	if message == "" {
 		return fmt.Errorf("message cannot be empty")
 	}
-	
+
 	color.Green("Publishing note: %s", message)
 	// In a real implementation, this would publish to Nostr relays
 	return nil
@@ -476,7 +535,7 @@ func checkForUpdate() error {
 func getRelayList() []string {
 	configDir := getConfigDir()
 	relayFile := filepath.Join(configDir, "relays.txt")
-	
+
 	// Default relays if file doesn't exist
 	if _, err := os.Stat(relayFile); os.IsNotExist(err) {
 		return []string{
@@ -485,7 +544,7 @@ func getRelayList() []string {
 			"wss://nos.lol",
 		}
 	}
-	
+
 	// Read relay file
 	data, err := ioutil.ReadFile(relayFile)
 	if err != nil {
@@ -495,7 +554,7 @@ func getRelayList() []string {
 			"wss://nos.lol",
 		}
 	}
-	
+
 	var relays []string
 	scanner := bufio.NewScanner(strings.NewReader(string(data)))
 	for scanner.Scan() {
@@ -504,7 +563,7 @@ func getRelayList() []string {
 			relays = append(relays, relay)
 		}
 	}
-	
+
 	return relays
 }
 
@@ -513,14 +572,14 @@ func addRelay(url string) error {
 	if !strings.HasPrefix(url, "wss://") {
 		return fmt.Errorf("relay URL must start with wss://")
 	}
-	
+
 	configDir := getConfigDir()
 	relayFile := filepath.Join(configDir, "relays.txt")
-	
+
 	if err := os.MkdirAll(configDir, 0700); err != nil {
 		return err
 	}
-	
+
 	// Read existing relays
 	var relays []string
 	if _, err := os.Stat(relayFile); err == nil {
@@ -528,7 +587,7 @@ func addRelay(url string) error {
 		if err != nil {
 			return err
 		}
-		
+
 		scanner := bufio.NewScanner(strings.NewReader(string(data)))
 		for scanner.Scan() {
 			relay := strings.TrimSpace(scanner.Text())
@@ -537,10 +596,10 @@ func addRelay(url string) error {
 			}
 		}
 	}
-	
+
 	// Add new relay
 	relays = append(relays, url)
-	
+
 	// Write back to file
 	content := strings.Join(relays, "\n")
 	return ioutil.WriteFile(relayFile, []byte(content), 0644)
@@ -550,7 +609,7 @@ func addRelay(url string) error {
 func removeRelay(url string) error {
 	configDir := getConfigDir()
 	relayFile := filepath.Join(configDir, "relays.txt")
-	
+
 	// Read existing relays
 	var relays []string
 	if _, err := os.Stat(relayFile); err == nil {
@@ -558,7 +617,7 @@ func removeRelay(url string) error {
 		if err != nil {
 			return err
 		}
-		
+
 		scanner := bufio.NewScanner(strings.NewReader(string(data)))
 		for scanner.Scan() {
 			relay := strings.TrimSpace(scanner.Text())
@@ -567,7 +626,7 @@ func removeRelay(url string) error {
 			}
 		}
 	}
-	
+
 	// Write back to file
 	content := strings.Join(relays, "\n")
 	return ioutil.WriteFile(relayFile, []byte(content), 0644)
@@ -580,18 +639,18 @@ func runStoreKeyCommand(nsec string) error {
 	if err != nil {
 		return fmt.Errorf("failed to decode nsec: %v", err)
 	}
-	
+
 	privKeyHex := hex.EncodeToString(privKey.([]byte))
-	
+
 	password, err := readPassword()
 	if err != nil {
 		return fmt.Errorf("password entry failed: %v", err)
 	}
-	
+
 	if err := saveKey(privKeyHex, password); err != nil {
 		return fmt.Errorf("failed to save key: %v", err)
 	}
-	
+
 	color.Green("Key stored successfully!")
 	return nil
 }
@@ -631,8 +690,14 @@ func showHelp() {
 
 // showVersion shows the version
 func showVersion() {
-	fmt.Printf("Hoot v0.1.0\n")
+	fmt.Printf("Hoot %s\n", Version)
 	fmt.Printf("Nostr CLI Tool\n")
+	if Commit != "" {
+		fmt.Printf("Commit: %s\n", Commit)
+	}
+	if Date != "" {
+		fmt.Printf("Built: %s\n", Date)
+	}
 }
 
 // withLoading is a helper function to show loading spinner
@@ -653,7 +718,7 @@ func main() {
 	// Initialize event cache
 	configDir := getConfigDir()
 	eventCache = NewEventCache(configDir)
-	
+
 	// Check if we have any arguments
 	if len(os.Args) == 1 {
 		// No arguments, launch TUI (preserved behavior)
@@ -664,15 +729,15 @@ func main() {
 				os.Exit(1)
 			}
 		}
-		
+
 		fmt.Println("Launching TUI...")
 		// In a real implementation, this would launch the TUI
 		return
 	}
-	
+
 	// Check if first argument is a subcommand
 	subcommand := os.Args[1]
-	
+
 	// Check if this is the login command and first run
 	if isFirstRun() && subcommand == "login" {
 		if err := runFirstRunWizard(); err != nil {
@@ -680,7 +745,7 @@ func main() {
 			os.Exit(1)
 		}
 	}
-	
+
 	switch subcommand {
 	case "post":
 		if len(os.Args) < 3 {
