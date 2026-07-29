@@ -1,6 +1,60 @@
 package main
 
-import "testing"
+import (
+	"os"
+	"path/filepath"
+	"testing"
+)
+
+func resetPasswordInput(t *testing.T) {
+	t.Helper()
+	passwordInput.stdin = false
+	passwordInput.file = ""
+	t.Cleanup(func() {
+		passwordInput.stdin = false
+		passwordInput.file = ""
+	})
+}
+
+func TestConfigurePasswordInput(t *testing.T) {
+	resetPasswordInput(t)
+	t.Setenv("HOOT_PASSWORD", "")
+	args, err := configurePasswordInput([]string{"buzz", "post", "--password-stdin", "hello"})
+	if err != nil {
+		t.Fatalf("configurePasswordInput returned error: %v", err)
+	}
+	if !passwordInput.stdin {
+		t.Fatal("stdin password source was not selected")
+	}
+	if got, want := args, []string{"buzz", "post", "hello"}; len(got) != len(want) || got[0] != want[0] || got[1] != want[1] || got[2] != want[2] {
+		t.Fatalf("got args %q, want %q", got, want)
+	}
+}
+
+func TestConfigurePasswordInputRejectsConflicts(t *testing.T) {
+	resetPasswordInput(t)
+	t.Setenv("HOOT_PASSWORD", "secret")
+	if _, err := configurePasswordInput([]string{"--password-stdin", "buzz", "post", "hello"}); err == nil {
+		t.Fatal("configurePasswordInput accepted multiple password sources")
+	}
+}
+
+func TestReadPasswordFromFileTrimsSingleLineEnding(t *testing.T) {
+	resetPasswordInput(t)
+	t.Setenv("HOOT_PASSWORD", "")
+	path := filepath.Join(t.TempDir(), "password")
+	if err := os.WriteFile(path, []byte("secret\r\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	passwordInput.file = path
+	got, err := readPassword()
+	if err != nil {
+		t.Fatalf("readPassword returned error: %v", err)
+	}
+	if got != "secret" {
+		t.Fatalf("got %q, want secret", got)
+	}
+}
 
 func TestBuzzPubkeyAcceptsHex(t *testing.T) {
 	key := "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"

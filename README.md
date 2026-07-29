@@ -37,6 +37,21 @@ hoot relay list
 
 The imported key is encrypted at rest under the platform config directory. Hoot prompts for the password when a command needs the key. Never pass private keys or passwords in shell history, logs, or automation output.
 
+## Automation
+
+Commands that need the encrypted key can receive its password non-interactively
+from exactly one of these sources:
+
+```sh
+HOOT_PASSWORD="..." hoot buzz post --relay wss://relay.example --channel <channel> "hello"
+printf '%s\n' "$PASSWORD" | hoot buzz post --password-stdin --relay wss://relay.example --channel <channel> "hello"
+hoot buzz post --password-file /run/secrets/hoot-password --relay wss://relay.example --channel <channel> "hello"
+```
+
+`--password-stdin` and `--password-file` may be placed before or after the
+command. Hoot rejects conflicting password sources. Prefer stdin or a
+permissions-restricted secret file over an environment variable where possible.
+
 ## Commands
 
 Run `hoot help` for the complete list. Common commands include `post`, `login`, `profile`, `feed`, `dm`, `replies`, `relay`, `tip`, `nwc`, `version`, and `update`.
