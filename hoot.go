@@ -85,31 +85,27 @@ func NewEventCache(configDir string) *EventCache {
 // syntax remains compatible.
 func configurePasswordInput(args []string) ([]string, error) {
 	filtered := make([]string, 0, len(args))
+	sources := 0
 	for i := 0; i < len(args); i++ {
 		switch args[i] {
 		case "--password-stdin":
+			sources++
 			passwordInput.stdin = true
 		case "--password-file":
 			if i+1 == len(args) || strings.HasPrefix(args[i+1], "-") {
 				return nil, fmt.Errorf("--password-file requires a path")
 			}
+			sources++
 			passwordInput.file = args[i+1]
 			i++
 		default:
 			filtered = append(filtered, args[i])
 		}
 	}
-	configured := 0
-	if passwordInput.stdin {
-		configured++
+	if _, set := os.LookupEnv("HOOT_PASSWORD"); set {
+		sources++
 	}
-	if passwordInput.file != "" {
-		configured++
-	}
-	if os.Getenv("HOOT_PASSWORD") != "" {
-		configured++
-	}
-	if configured > 1 {
+	if sources > 1 {
 		return nil, fmt.Errorf("use only one password source: HOOT_PASSWORD, --password-stdin, or --password-file")
 	}
 	return filtered, nil
@@ -119,7 +115,7 @@ func configurePasswordInput(args []string) ([]string, error) {
 // output. Environment variables and files are intended for controlled
 // automation; stdin is preferred for pipelines and CI secret mounts.
 func readPassword() (string, error) {
-	if password := os.Getenv("HOOT_PASSWORD"); password != "" {
+	if password, set := os.LookupEnv("HOOT_PASSWORD"); set {
 		return password, nil
 	}
 	if passwordInput.file != "" {

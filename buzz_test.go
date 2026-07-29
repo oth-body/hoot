@@ -16,9 +16,24 @@ func resetPasswordInput(t *testing.T) {
 	})
 }
 
+func unsetHootPassword(t *testing.T) {
+	t.Helper()
+	old, set := os.LookupEnv("HOOT_PASSWORD")
+	if err := os.Unsetenv("HOOT_PASSWORD"); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if set {
+			_ = os.Setenv("HOOT_PASSWORD", old)
+			return
+		}
+		_ = os.Unsetenv("HOOT_PASSWORD")
+	})
+}
+
 func TestConfigurePasswordInput(t *testing.T) {
 	resetPasswordInput(t)
-	t.Setenv("HOOT_PASSWORD", "")
+	unsetHootPassword(t)
 	args, err := configurePasswordInput([]string{"buzz", "post", "--password-stdin", "hello"})
 	if err != nil {
 		t.Fatalf("configurePasswordInput returned error: %v", err)
@@ -39,9 +54,29 @@ func TestConfigurePasswordInputRejectsConflicts(t *testing.T) {
 	}
 }
 
-func TestReadPasswordFromFileTrimsSingleLineEnding(t *testing.T) {
+func TestConfigurePasswordInputRejectsRepeatedFlag(t *testing.T) {
+	resetPasswordInput(t)
+	unsetHootPassword(t)
+	if _, err := configurePasswordInput([]string{"--password-file", "first", "--password-file", "second", "buzz", "post", "hello"}); err == nil {
+		t.Fatal("configurePasswordInput accepted repeated password-file flags")
+	}
+}
+
+func TestReadPasswordUsesEmptyEnvironmentValue(t *testing.T) {
 	resetPasswordInput(t)
 	t.Setenv("HOOT_PASSWORD", "")
+	got, err := readPassword()
+	if err != nil {
+		t.Fatalf("readPassword returned error: %v", err)
+	}
+	if got != "" {
+		t.Fatalf("got %q, want empty password", got)
+	}
+}
+
+func TestReadPasswordFromFileTrimsSingleLineEnding(t *testing.T) {
+	resetPasswordInput(t)
+	unsetHootPassword(t)
 	path := filepath.Join(t.TempDir(), "password")
 	if err := os.WriteFile(path, []byte("secret\r\n"), 0600); err != nil {
 		t.Fatal(err)
