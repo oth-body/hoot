@@ -42,6 +42,10 @@ var (
 		Connect: 30 * time.Second,
 		Publish: 15 * time.Second,
 	}
+	passwordInput = struct {
+		stdin bool
+		file  string
+	}{}
 )
 
 // Config directory paths
@@ -76,8 +80,59 @@ func NewEventCache(configDir string) *EventCache {
 
 // Key management functions
 
-// readPassword reads a password from stdin
+// configurePasswordInput extracts non-interactive password options before command
+// dispatch. They may appear before or after the command so existing command
+// syntax remains compatible.
+func configurePasswordInput(args []string) ([]string, error) {
+	filtered := make([]string, 0, len(args))
+	sources := 0
+	for i := 0; i < len(args); i++ {
+		switch args[i] {
+		case "--password-stdin":
+			sources++
+			passwordInput.stdin = true
+		case "--password-file":
+			if i+1 == len(args) || strings.HasPrefix(args[i+1], "-") {
+				return nil, fmt.Errorf("--password-file requires a path")
+			}
+			sources++
+			passwordInput.file = args[i+1]
+			i++
+		default:
+			filtered = append(filtered, args[i])
+		}
+	}
+	if _, set := os.LookupEnv("HOOT_PASSWORD"); set {
+		sources++
+	}
+	if sources > 1 {
+		return nil, fmt.Errorf("use only one password source: HOOT_PASSWORD, --password-stdin, or --password-file")
+	}
+	return filtered, nil
+}
+
+// readPassword reads a password without exposing it in process arguments or
+// output. Environment variables and files are intended for controlled
+// automation; stdin is preferred for pipelines and CI secret mounts.
 func readPassword() (string, error) {
+	if password, set := os.LookupEnv("HOOT_PASSWORD"); set {
+		return password, nil
+	}
+	if passwordInput.file != "" {
+		data, err := ioutil.ReadFile(passwordInput.file)
+		if err != nil {
+			return "", fmt.Errorf("read password file: %w", err)
+		}
+		return strings.TrimRight(string(data), "\r\n"), nil
+	}
+	if passwordInput.stdin {
+		reader := bufio.NewReader(os.Stdin)
+		password, err := reader.ReadString('\n')
+		if err != nil && len(password) == 0 {
+			return "", fmt.Errorf("read password from stdin: %w", err)
+		}
+		return strings.TrimRight(password, "\r\n"), nil
+	}
 	fmt.Print("Enter password: ")
 	bytePassword, err := terminal.ReadPassword(int(os.Stdin.Fd()))
 	fmt.Println()
@@ -659,6 +714,9 @@ func runStoreKeyCommand(nsec string) error {
 func showHelp() {
 	fmt.Printf("Hoot - Nostr CLI Tool\n\n")
 	fmt.Printf("Usage: hoot <command> [options]\n\n")
+	fmt.Printf("Authentication options (for commands needing the encrypted key):\n")
+	fmt.Printf("  --password-stdin             Read password from standard input\n")
+	fmt.Printf("  --password-file <path>       Read password from a file\n\n")
 	fmt.Printf("Commands:\n")
 	fmt.Printf("  post <message>              Post a message to Nostr\n")
 	fmt.Printf("  login                       Interactive key setup\n")
@@ -716,6 +774,13 @@ func withLoading(message string, fn func() error) error {
 
 // main function (around line 1999 as mentioned in requirements)
 func main() {
+	args, err := configurePasswordInput(os.Args[1:])
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		os.Exit(4)
+	}
+	os.Args = append(os.Args[:1], args...)
+
 	// Initialize event cache
 	configDir := getConfigDir()
 	eventCache = NewEventCache(configDir)
