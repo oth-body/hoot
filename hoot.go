@@ -674,6 +674,7 @@ func showHelp() {
 	fmt.Printf("  relay list                 List configured relays\n")
 	fmt.Printf("  relay add <url>             Add a relay\n")
 	fmt.Printf("  relay remove <url>          Remove a relay\n")
+	fmt.Printf("  buzz post|dm                Publish to a Buzz relay (NIP-29/NIP-17)\n")
 	fmt.Printf("  tip <amount> --user <npub>  Send a tip\n")
 	fmt.Printf("  tip <amount> <lud16-or-npub> Send a tip (shorthand)\n")
 	fmt.Printf("  nwc set <uri>               Set up Nostr Wallet Connect\n")
@@ -747,6 +748,11 @@ func main() {
 	}
 
 	switch subcommand {
+	case "buzz":
+		if err := runBuzzCommand(os.Args[2:]); err != nil {
+			fmt.Printf("Error: %v\n", err)
+			os.Exit(1)
+		}
 	case "post":
 		if len(os.Args) < 3 {
 			fmt.Println("Error: post requires a message")
