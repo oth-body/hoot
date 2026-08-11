@@ -169,7 +169,7 @@ Hoot supports sending Lightning tips via NWC.
 hoot -nwc "nostr+walletconnect://..."
 ```
 
-Get your NWC URI from a compatible wallet like Alby or Mutiny.
+Get your NWC URI from a compatible wallet. See the [awesome-nwc apps list](https://github.com/getAlby/awesome-nwc?tab=readme-ov-file#apps) for Alby, Mutiny, and others.
 
 #### Send a tip
 
