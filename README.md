@@ -10,6 +10,8 @@ A simple command-line tool for using the Nostr network. It keeps your keys safe,
 - List recent posts
 - Customizable relay list
 
+📖 Full documentation: https://hoot-docs.vercel.app
+
 ## Screenshots
 
 <p align="center">
