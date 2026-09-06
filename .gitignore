@@ -1,1 +1,45 @@
+# Build outputs — GoReleaser (#43) and `go build` both produce these.
+# Without this rule, `hoot.exe` (Windows) and `hoot-test` (Linux test
+# binary, built by hoot_test.go's TestMain) have both ended up tracked
+# at 13 MB each — see fix/untrack-built-binaries.
+hoot
+hoot.exe
+hoot-test
+hoot-test.exe
+hoot-cli
+hoot-cli.exe
+
+# Standard Go build artifacts (covers the case where someone renames
+# the binary or builds into a sub-dir).
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+
+# Test binary cache (go test -c output) and coverage files.
+*.test
+*.out
+coverage.txt
+coverage.html
+*.coverprofile
+
+# Go workspace files (Go 1.18+).
+go.work
+go.work.sum
+
+# Editor / IDE scratch files.
 .aider*
+.idea/
+.vscode/
+*.swp
+*.swo
+.DS_Store
+
+# Dependency caches.
+vendor/
+
+# Local config — keep the example checked in, ignore overrides.
+.env
+.env.local
+*.local
