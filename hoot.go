@@ -36,11 +36,31 @@ const (
 	version          = "0.0.4" // Define the version here
 )
 
+// defaultRelays is the set of relays hoot publishes to when the user
+// has no relays.txt configured. The list is de-duplicated at module
+// load (see init()) — historically this slice contained wss://nostr.wine
+// twice, which caused every post to be sent to the same relay in
+// parallel (and double-counted in `success`).
 var defaultRelays = []string{
 	"wss://relay.damus.io",
 	"wss://relay.nostr.band",
 	"wss://nostr.wine",
-	"wss://nostr.wine",
+}
+
+func init() {
+	// Dedupe defaultRelays. If you add a new default relay and accidentally
+	// paste an existing one, this catches it at process start instead of
+	// at every publish.
+	seen := make(map[string]struct{}, len(defaultRelays))
+	deduped := defaultRelays[:0]
+	for _, r := range defaultRelays {
+		if _, ok := seen[r]; ok {
+			continue
+		}
+		seen[r] = struct{}{}
+		deduped = append(deduped, r)
+	}
+	defaultRelays = deduped
 }
 
 // Global NIP-46 session and local key
@@ -499,10 +519,21 @@ func MigrateLegacyKey() error {
 	return SaveProfiles(store)
 }
 
-// generateProfileID creates a unique profile ID
+// generateProfileID creates a unique profile ID. Uses crypto/rand.Read
+// (returns an error if the system entropy source fails — vanishingly
+// rare but possible). On error, fall back to a timestamp-derived ID
+// rather than returning "0000000000000000" (the hex of an all-zero
+// buffer), which would collide with every other failed call and
+// silently overwrite profiles.json entries.
 func generateProfileID() string {
 	b := make([]byte, 8)
-	rand.Read(b)
+	if _, err := rand.Read(b); err != nil {
+		// crypto/rand failure is extraordinary (kernel CSPRNG down).
+		// Fall back to nanosecond timestamp; not cryptographic, but
+		// distinct across calls within a single process and good
+		// enough to prevent collision-induced data loss.
+		return fmt.Sprintf("%x", time.Now().UnixNano())
+	}
 	return fmt.Sprintf("%x", b)
 }
 
@@ -1039,8 +1070,11 @@ func payInvoiceNWC(invoice string) error {
 		return fmt.Errorf("incomplete NWC URI")
 	}
 
-	// 2. Connect to Relay
-	ctx := context.Background()
+	// 2. Connect to Relay. Use a 30s timeout so a hung wallet doesn't
+	// freeze `hoot -tip` forever (matches LNURL spec recommended timeout).
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
 	relay, err := nostr.RelayConnect(ctx, relayURL)
 	if err != nil {
 		return fmt.Errorf("failed to connect to NWC relay: %w", err)
@@ -1080,14 +1114,21 @@ func payInvoiceNWC(invoice string) error {
 		Tags:      nostr.Tags{{"p", walletPubKey}},
 		Content:   encryptedContent,
 	}
-	event.Sign(secret)
+	if err := event.Sign(secret); err != nil {
+		return fmt.Errorf("failed to sign NWC request: %w", err)
+	}
 
 	if err := relay.Publish(ctx, event); err != nil {
 		return fmt.Errorf("failed to publish request: %w", err)
 	}
 
-	//Ideally we should listen for response (kind 23195), but for simplicity:
-	fmt.Println("NWC Request sent! Payment should happen shortly.")
+	// NIP-47 flow: after publishing the request, the wallet responds
+	// with a kind 23195 event addressed back to us. We don't currently
+	// listen for it (would require a Subscribe + a goroutine + a
+	// timeout), so the honest answer is: we sent the request, but
+	// we don't know if the wallet paid. Tell the user that.
+	fmt.Println("NWC request sent. Note: hoot does not currently listen for the wallet's response (kind 23195), so this only confirms the relay accepted the request, not that the payment was made.")
+	fmt.Println("Check your wallet's transaction history to confirm the payment went through.")
 	return nil
 }
 
