@@ -1093,7 +1093,41 @@ func payInvoiceNWC(invoice string) error {
 
 // NWC Helpers
 
+// validateNWCURI ensures the string has the structure of a NIP-47
+// NWC connection string before we save it to disk. Without this,
+// `hoot -nwc garbage` silently writes garbage to nwc.txt and only
+// fails later when the user tries to tip (with a less-actionable
+// error). The check is intentionally permissive — any future
+// NWC-extension fields will pass through unchanged — but it rejects
+// the obviously-wrong cases (empty, wrong scheme, missing required
+// fields).
+func validateNWCURI(uri string) error {
+	if uri == "" {
+		return fmt.Errorf("NWC URI must not be empty")
+	}
+	u, err := url.Parse(uri)
+	if err != nil {
+		return fmt.Errorf("NWC URI is not a valid URL: %w", err)
+	}
+	if u.Scheme != "nostr+walletconnect" {
+		return fmt.Errorf("NWC URI scheme must be nostr+walletconnect, got %q", u.Scheme)
+	}
+	if u.Hostname() == "" {
+		return fmt.Errorf("NWC URI missing wallet pubkey in authority")
+	}
+	if u.Query().Get("relay") == "" {
+		return fmt.Errorf("NWC URI missing required ?relay= parameter")
+	}
+	if u.Query().Get("secret") == "" {
+		return fmt.Errorf("NWC URI missing required ?secret= parameter")
+	}
+	return nil
+}
+
 func saveNWCURI(uri string) error {
+	if err := validateNWCURI(uri); err != nil {
+		return err
+	}
 	configDir := getConfigDir()
 	if err := os.MkdirAll(configDir, 0700); err != nil {
 		return err
@@ -1112,7 +1146,10 @@ func getNWCURI() (string, error) {
 	return strings.TrimSpace(string(data)), nil
 }
 
-// resolveLud16 fetches the callback from a Lightning Address (username@domain)
+// resolveLud16 fetches the callback from a Lightning Address (username@domain).
+// Uses an http.Client with a 10s total timeout so a hung LNURL endpoint
+// can't freeze `hoot -tip` forever (matches the LUD-16 spec recommendation
+// for lnurlp responses).
 func resolveLud16(lud16 string) (string, error) {
 	parts := strings.Split(lud16, "@")
 	if len(parts) != 2 {
@@ -1121,7 +1158,8 @@ func resolveLud16(lud16 string) (string, error) {
 	username, domain := parts[0], parts[1]
 	url := fmt.Sprintf("https://%s/.well-known/lnurlp/%s", domain, username)
 
-	resp, err := http.Get(url)
+	client := &http.Client{Timeout: 10 * time.Second}
+	resp, err := client.Get(url)
 	if err != nil {
 		return "", err
 	}
@@ -1151,7 +1189,8 @@ func fetchLightningInvoice(callback string, amountSats int64) (string, error) {
 	}
 
 	url := fmt.Sprintf("%s%samount=%d", callback, separator, amountMillisats)
-	resp, err := http.Get(url)
+	client := &http.Client{Timeout: 10 * time.Second}
+	resp, err := client.Get(url)
 	if err != nil {
 		return "", err
 	}
