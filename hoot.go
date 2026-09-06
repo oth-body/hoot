@@ -1782,29 +1782,57 @@ func main() {
 	}
 
 	// Publish the event using a relay pool with a loading bar.
-	err = withLoading("Publishing post", func() error {
-		ctx := context.Background()
-		pool := nostr.NewSimplePool(ctx)
-		for _, relayURL := range relays {
-			relay, err := pool.EnsureRelay(relayURL)
-			if err != nil {
-				log.Printf("Failed to add relay %s: %v", relayURL, err)
-				continue
-			}
-			defer relay.Close()
-		}
-		pool.Relays.Range(func(key string, relay *nostr.Relay) bool {
-			err := relay.Publish(ctx, event)
-			if err == nil {
-				fmt.Printf("Successfully published to relay: %s\n", relay.URL)
-			} else {
-				fmt.Printf("Failed to publish to relay %s: %v\n", relay.URL, err)
-			}
-			return true
-		})
-		return nil
-	})
-	if err != nil {
-		log.Fatalf("Publishing failed: %v", err)
+	// On error (no relay accepted the event), fall through to log + exit
+	// non-zero instead of log.Fatalf, so defers (eventCache.Close, etc.)
+	// actually run — the prior code skipped them with os.Exit.
+	if err := withLoading("Publishing post", func() error {
+		return publishNote(context.Background(), relays, event)
+	}); err != nil {
+		log.Printf("Publishing failed: %v", err)
+		os.Exit(1)
 	}
+}
+
+// publishNote publishes a signed event to all configured relays and
+// returns an error if no relay accepted the event. Mirrors the success-
+// counting pattern from publishPostTUI so the caller can distinguish
+// "all relays failed" from "some relays succeeded".
+func publishNote(ctx context.Context, relays []string, event nostr.Event) error {
+	pool := nostr.NewSimplePool(ctx)
+	for _, relayURL := range relays {
+		relay, err := pool.EnsureRelay(relayURL)
+		if err != nil {
+			log.Printf("Failed to add relay %s: %v", relayURL, err)
+			continue
+		}
+		// Close each relay when this function returns. Note: deferring
+		// inside a loop defers to function-exit (not loop-iteration), so
+		// all closes fire at once. That's fine — the SimplePool's own
+		// cleanup would do the same thing on program exit anyway.
+		defer relay.Close()
+	}
+
+	success := 0
+	failed := 0
+	pool.Relays.Range(func(key string, relay *nostr.Relay) bool {
+		err := relay.Publish(ctx, event)
+		if err == nil {
+			success++
+			fmt.Printf("Successfully published to relay: %s\n", relay.URL)
+		} else {
+			failed++
+			fmt.Printf("Failed to publish to relay %s: %v\n", relay.URL, err)
+		}
+		return true
+	})
+
+	if success == 0 {
+		return fmt.Errorf("failed to publish to any relay (%d attempted, %d failed)", len(relays), failed)
+	}
+	if failed > 0 {
+		// Partial success is still a successful outcome (the event is
+		// on the network), but tell the caller some relays rejected it.
+		fmt.Printf("Published to %d relay(s); %d failed\n", success, failed)
+	}
+	return nil
 }
