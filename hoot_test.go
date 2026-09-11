@@ -249,16 +249,18 @@ func TestProfileUpdate(t *testing.T) {
 }
 
 func TestNWCParsing(t *testing.T) {
-	output, err := runHoot(t, nil, "-nwc", "invalid-uri")
-	// Should attempt to save but fail validation in payInvoice?
-	// The -nwc flag just saves whatever string validation might just be basic.
-	// Actually saveNWCURI doesn't validate content, just saves.
-	// So checking if it "saved successfully" might be enough for CLI wiring.
+	// Use a properly-formatted NWC URI. Pre-fix this test passed
+	// "invalid-uri" and asserted "saved successfully" — that pinned
+	// the bug (saveNWCURI didn't validate). The fix added a struct-
+	// ural check; this test now uses a valid one to confirm the save
+	// path still works end-to-end.
+	validURI := "nostr+walletconnect://pubkey123?relay=wss%3A%2F%2Frelay.example.com&secret=hexsecret"
+	output, err := runHoot(t, nil, "-nwc", validURI)
 	if err != nil {
 		t.Fatalf("Failed to run -nwc: %v", err)
 	}
 	if !strings.Contains(output, "NWC URI saved successfully") {
-		t.Errorf("Expected success message, got: %s", output)
+		t.Errorf("Expected success message for valid URI, got: %s", output)
 	}
 }
 
