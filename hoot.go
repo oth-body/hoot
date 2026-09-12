@@ -30,7 +30,7 @@ import (
 )
 
 const (
-	appName          = "nostr-cli"
+	appName          = "hoot"
 	keyFileName      = "nostr_key.enc"
 	profilesFileName = "profiles.json"
 	version          = "0.0.4" // Define the version here
@@ -1340,7 +1340,7 @@ func main() {
 
 	// Handle version flag
 	if *versionPtr {
-		fmt.Printf("nostr-cli version %s\n", version)
+		fmt.Printf("hoot version %s\n", version)
 		return
 	}
 

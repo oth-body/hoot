@@ -4,6 +4,8 @@ import (
 	"context"
 	"strings"
 	"testing"
+
+	"github.com/nbd-wtf/go-nostr"
 )
 
 // TestPublishNoteAllRelaysFail pins that publishNote returns an error

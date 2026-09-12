@@ -59,7 +59,7 @@ func TestVersion(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to run -version: %v, output: %s", err, output)
 	}
-	if !strings.Contains(output, "nostr-cli version") {
+	if !strings.Contains(output, "hoot version") {
 		t.Errorf("Expected version output, got: %s", output)
 	}
 }
@@ -99,7 +99,7 @@ func TestStoreAndLoadKey(t *testing.T) {
 	}
 
 	// Verify file exists
-	keyFile := filepath.Join(tempDir, "nostr-cli", "nostr_key.enc")
+	keyFile := filepath.Join(tempDir, "hoot", "nostr_key.enc")
 	if _, err := os.Stat(keyFile); os.IsNotExist(err) {
 		t.Errorf("Key file was not created at %s", keyFile)
 	}
