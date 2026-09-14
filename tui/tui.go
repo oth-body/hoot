@@ -199,9 +199,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.width = msg.Width
 		m.height = msg.Height
 
-		// If window dimensions changed and we have QR data, mark for regeneration
+		// If window dimensions changed and we have QR data, force a
+		// regeneration. We call regenerateQR directly (rather than only
+		// setting the flag) so the new dimensions are applied even when
+		// the previous Update already attempted a regen with stale zeros.
 		if (widthChanged || heightChanged) && m.qrData != "" {
 			m.qrNeedsRegeneration = true
+			m.regenerateQR()
 		}
 
 		return m, nil
@@ -526,9 +530,25 @@ func (m Model) initQR() tea.Msg {
 	return nil
 }
 
-// regenerateQR generates the QR code based on current terminal dimensions
+// regenerateQR generates the QR code based on current terminal dimensions.
+//
+// If the terminal is too small (or dimensions haven't been measured yet),
+// the qrRendered buffer is cleared and the qrNeedsRegeneration flag is left
+// set so the QR will be regenerated on the next View() call. Without this,
+// an early-return would permanently stick the flag in a "needs regen" state
+// that never fires again — which was the source of the original bug where
+// the QR code failed to render when qrGeneratedMsg arrived before
+// tea.WindowSizeMsg.
 func (m *Model) regenerateQR() {
-	if m.qrData == "" || m.width < 20 || m.height < 10 {
+	if m.qrData == "" {
+		m.qrRendered = ""
+		m.qrNeedsRegeneration = false
+		return
+	}
+
+	if m.width < 20 || m.height < 10 {
+		// Terminal too small to render a useful QR — keep the regen
+		// flag set so we try again as soon as the dimensions change.
 		m.qrRendered = ""
 		return
 	}
