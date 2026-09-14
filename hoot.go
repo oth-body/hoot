@@ -1425,16 +1425,23 @@ func main() {
 				return os.WriteFile(relayPath, []byte(data), 0600)
 			},
 			OnInitQR: func() (string, error) {
-				// Initialize NIP-46 session
-				relays := getRelayList()
-				relayURL := relays[0] // Use first configured relay
-				uri, session, err := nip46.GenerateConnectURI(relayURL, "Hoot")
-				if err != nil {
-					return "", err
-				}
-				nip46Session = session
-				return uri, nil
-			},
+			// Initialize NIP-46 session against ALL configured relays.
+			// If we pick just one and it's down at scan-time, the user
+			// gets a websocket error from the very first connect attempt
+			// (this was the previous behavior). With a list, the QR URI
+			// advertises every one of them and WaitForConnection dials
+			// them in parallel — whichever the remote signer publishes
+			// through is the one hoot reads the response on. getRelayList
+			// already falls back to defaultRelays when there's no
+			// user-defined relays.txt.
+			relays := getRelayList()
+			uri, session, err := nip46.GenerateConnectURI(relays, "Hoot")
+			if err != nil {
+				return "", err
+			}
+			nip46Session = session
+			return uri, nil
+		},
 			OnCheckQR: func() (string, error) {
 				if nip46Session == nil {
 					return "", fmt.Errorf("session not initialized")
