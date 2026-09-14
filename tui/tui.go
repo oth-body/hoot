@@ -555,18 +555,22 @@ func (m *Model) regenerateQR() {
 
 	var sb strings.Builder
 
-	// Adjust configuration based on available space
+	// Adjust configuration based on available space.
+	//
+	// Use half-block rendering by default — it packs two QR rows into
+	// each terminal line (half the height), which is the only practical
+	// way to fit a real-world nostr URI (150–300 bytes) into a typical
+	// terminal. Don't pass BlackChar/WhiteChar; qrterminal's defaults
+	// are the half-block Unicode glyphs (▀▄█ space). Overriding them
+	// with the ANSI-bg constants (qrterminal.BLACK/WHITE, which are
+	// 6-byte escape sequences per module) inflates each module to 6
+	// terminal columns in half-block mode, blowing the QR out to 300+
+	// columns wide and overflowing any reasonable terminal.
 	config := qrterminal.Config{
 		Level:     qrterminal.L, // Lower error correction for smaller QR
 		Writer:    &sb,
-		BlackChar: qrterminal.BLACK,
-		WhiteChar: qrterminal.WHITE,
-		QuietZone: 1, // Minimal quiet zone for space efficiency
-	}
-
-	// Use half-block characters for more compact display if terminal is small
-	if m.width < 50 || m.height < 25 {
-		config.HalfBlocks = true
+		HalfBlocks: true,
+		QuietZone:  1, // 1-module border; qrterminal enforces a minimum of 1
 	}
 
 	qrterminal.GenerateWithConfig(m.qrData, config)
@@ -919,17 +923,23 @@ func (m Model) viewQRLogin() string {
 
 	content := b.String()
 
-	// Center the content using lipgloss.Place if we have valid dimensions
+	// Center the content using lipgloss.Place if we have valid dimensions.
+	//
+	// IMPORTANT: do NOT set MaxWidth on the content style. The QR code
+	// is a fixed-width bitmap; if MaxWidth < the rendered QR width,
+	// lipgloss wraps it line-by-line, destroying the QR pattern. The
+	// QR is always ~50 columns wide visually (half-block Unicode
+	// glyphs at minimum QR size); on terminals narrower than that,
+	// the user will see the QR truncated horizontally rather than
+	// pseudo-rendered as wrapped text — which is still better than
+	// the previous behavior of rendering as ~80 lines of 1-column
+	// wide bars.
 	if m.width > 0 && m.height > 0 {
-		// Create a style for the content box
 		contentStyle := lipgloss.NewStyle().
-			MaxWidth(m.width-4). // Leave margin
-			Padding(1, 2)        // Add padding
+			Padding(1, 2) // Padding only — no MaxWidth.
 
-		// Apply the style to content
 		styledContent := contentStyle.Render(content)
 
-		// Center the styled content
 		return lipgloss.Place(
 			m.height,
 			m.width,
