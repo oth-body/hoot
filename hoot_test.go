@@ -37,6 +37,23 @@ func TestMain(m *testing.M) {
 	os.Exit(code)
 }
 
+// hasInteractiveTTY reports whether the test process can open /dev/tty.
+// The TUI path needs an interactive terminal; this is unavailable on
+// most CI runners, so tests that exercise the TUI must skip when absent.
+func hasInteractiveTTY() bool {
+	if runtime.GOOS == "windows" {
+		// Windows behavior varies; let the test attempt and bail out
+		// via its own error handling.
+		return true
+	}
+	f, err := os.OpenFile("/dev/tty", os.O_RDWR, 0)
+	if err != nil {
+		return false
+	}
+	f.Close()
+	return true
+}
+
 func runHoot(t *testing.T, env map[string]string, args ...string) (string, error) {
 	cmd := exec.Command(binaryPath, args...)
 
@@ -106,6 +123,11 @@ func TestStoreAndLoadKey(t *testing.T) {
 
 	// 2. Test Loading the Key (Default action)
 	// This should verify the password works and it can decrypt.
+	// The default action launches the TUI, which requires an interactive
+	// TTY (/dev/tty). Most CI runners don't provide one, so skip there.
+	if !hasInteractiveTTY() {
+		t.Skip("no interactive TTY available; skipping TUI load test")
+	}
 	output, err = runHoot(t, env)
 	if err != nil {
 		t.Fatalf("Failed to load key: %v, output: %s", err, output)
