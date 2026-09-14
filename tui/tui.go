@@ -8,6 +8,7 @@ import (
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/muesli/reflow/ansi"
 
 	"github.com/mdp/qrterminal/v3"
 )
@@ -32,8 +33,7 @@ const (
 var (
 	titleStyle = lipgloss.NewStyle().
 			Bold(true).
-			Foreground(lipgloss.Color("205")).
-			MarginBottom(1)
+			Foreground(lipgloss.Color("205"))
 
 	menuStyle = lipgloss.NewStyle().
 			Foreground(lipgloss.Color("246"))
@@ -802,7 +802,18 @@ func (m Model) View() string {
 		b.WriteString("\n" + m.messageStyle.Render(m.message))
 	}
 
-	b.WriteString("\n\n" + menuStyle.Render("Press Esc to go back, Ctrl+C to quit"))
+	// The QR screen ends with a block (title / QR / footer) that
+	// viewQRLogin right-pads to a uniform width so everything in
+	// the block shares an indent. The trailing global footer we
+	// append here is OUTSIDE that block, so lipgloss.Place would
+	// center it on its own and break the alignment. To keep the
+	// whole screen visually coherent, append a short "press esc"
+	// footer that wraps to the same block width as the rest.
+	if m.screen == ScreenQRLogin {
+		// Already inside viewQRLogin — nothing to append.
+	} else {
+		b.WriteString("\n\n" + menuStyle.Render("Press Esc to go back, Ctrl+C to quit"))
+	}
 
 	content := b.String()
 
@@ -929,63 +940,84 @@ func (m Model) viewLogin() string {
 }
 
 func (m Model) viewQRLogin() string {
-	var b strings.Builder
+	// Build the screen as a single block: title, body, footer. The
+	// outer View() centers this block inside the terminal using
+	// lipgloss.Place, which right-pads every line to the block's
+	// widest line via ansi.PrintableRuneWidth. If individual lines
+	// differ in printable width, lipgloss leaves them at different
+	// indents (each line is centered on its own width). To keep
+	// every line visually "together" — title, QR, and footers all
+	// at the same column — we explicitly right-pad every line so
+	// each line reports the same printable width to lipgloss.
+	var body strings.Builder
 
-	// Create content
-	b.WriteString(titleStyle.Render("📱 Scan with Amber"))
-	b.WriteString("\n\n")
+	// Title (right-padded below).
+	title := titleStyle.Render("📱 Scan with Amber")
 
+	var middle string
+	var suffix string
 	if m.qrRendered != "" {
-		// QR is rendered. Don't append the global m.message here — it
-		// could be the leftover "Generating QR code..." string from
-		// handleLoginEnter, which was already cleared in the
+		// QR is rendered. Don't append the global m.message here —
+		// it could be the leftover "Generating QR code..." string
+		// from handleLoginEnter, which was cleared in the
 		// qrGeneratedMsg handler. Showing it below the QR would
 		// contradict the QR that's on-screen.
-		b.WriteString(m.qrRendered)
-		b.WriteString("\n\n")
-		b.WriteString(menuStyle.Render("Waiting for connection... scan this with your Amber app."))
+		middle = m.qrRendered
+		suffix = menuStyle.Render("Waiting for connection... scan this with your Amber app.")
 	} else if m.qrData != "" {
-		// QR data is known but regenerateQR() hasn't produced output yet
-		// (e.g. WindowSizeMsg hasn't arrived or terminal is too small).
-		// Show a live spinner instead of static text — the prior
-		// behavior read as "stuck" because nothing changed.
-		b.WriteString(m.spinner.View() + " Generating QR code...")
+		middle = m.spinner.View() + " Generating QR code..."
+		suffix = ""
 	} else {
-		// No URI yet. Also show a spinner — the previous static text
-		// was indistinguishable from a hung program.
-		b.WriteString(m.spinner.View() + " Generating connection...")
+		middle = m.spinner.View() + " Generating connection..."
+		suffix = ""
 	}
 
-	content := b.String()
-
-	// Center the content using lipgloss.Place if we have valid dimensions.
-	//
-	// IMPORTANT: do NOT set MaxWidth on the content style. The QR code
-	// is a fixed-width bitmap; if MaxWidth < the rendered QR width,
-	// lipgloss wraps it line-by-line, destroying the QR pattern. The
-	// QR is always ~50 columns wide visually (half-block Unicode
-	// glyphs at minimum QR size); on terminals narrower than that,
-	// the user will see the QR truncated horizontally rather than
-	// pseudo-rendered as wrapped text — which is still better than
-	// the previous behavior of rendering as ~80 lines of 1-column
-	// wide bars.
-	if m.width > 0 && m.height > 0 {
-		contentStyle := lipgloss.NewStyle().
-			Padding(1, 2) // Padding only — no MaxWidth.
-
-		styledContent := contentStyle.Render(content)
-
-		return lipgloss.Place(
-			m.height,
-			m.width,
-			lipgloss.Center,
-			lipgloss.Center,
-			styledContent,
-		)
+	// Find the QR's max ansi-printable width so we can right-pad
+	// every line to it. Use ansi.PrintableRuneWidth so the count
+	// matches what lipgloss will see in PlaceHorizontal — using
+	// runewidth.StringWidth would count double-width emoji as
+	// 2 cols and create a 1-col mismatch that breaks alignment.
+	qrWidth := 0
+	for _, l := range strings.Split(middle, "\n") {
+		if w := ansi.PrintableRuneWidth(l); w > qrWidth {
+			qrWidth = w
+		}
+	}
+	if suffix != "" {
+		if w := ansi.PrintableRuneWidth(suffix); w > qrWidth {
+			qrWidth = w
+		}
+	}
+	// Include the "Press Esc" global footer in the same block so the
+	// whole screen — including the global footer — is centered as one
+	// unit. Without this, View()'s trailing footer would sit at a
+	// different column than the title/QR group.
+	footer := menuStyle.Render("Press Esc to go back, Ctrl+C to quit")
+	if w := ansi.PrintableRuneWidth(footer); w > qrWidth {
+		qrWidth = w
 	}
 
-	// Fallback to non-centered content if dimensions aren't available
-	return content
+	padLine := func(s string) string {
+		w := ansi.PrintableRuneWidth(s)
+		if w >= qrWidth {
+			return s
+		}
+		return s + strings.Repeat(" ", qrWidth-w)
+	}
+
+	body.WriteString(padLine(title))
+	body.WriteString("\n\n")
+	for _, l := range strings.Split(middle, "\n") {
+		body.WriteString(padLine(l))
+		body.WriteString("\n")
+	}
+	if suffix != "" {
+		body.WriteString(padLine(suffix))
+		body.WriteString("\n")
+	}
+	body.WriteString(padLine(footer))
+
+	return body.String()
 }
 
 func (m Model) viewHome() string {
