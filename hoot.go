@@ -1425,19 +1425,19 @@ func main() {
 				return os.WriteFile(relayPath, []byte(data), 0600)
 			},
 			OnInitQR: func() (string, error) {
-			// Initialize NIP-46 session against ALL configured relays.
-			// If we pick just one and it's down at scan-time, the user
-			// gets a websocket error from the very first connect attempt
-			// (this was the previous behavior). With a list, the QR URI
-			// advertises every one of them and WaitForConnection dials
-			// them in parallel — whichever the remote signer publishes
-			// through is the one hoot reads the response on. getRelayList
-			// already falls back to defaultRelays when there's no
-			// user-defined relays.txt.
+			// Generate NIP-46 URI with ALL configured relays and
+			// immediately dial + subscribe on them. By the time the
+			// user scans, the subscriptions are active and we won't
+			// miss the signer's connect event.
 			relays := getRelayList()
 			uri, session, err := nip46.GenerateConnectURI(relays, "Hoot")
 			if err != nil {
 				return "", err
+			}
+			// Dial and subscribe in the background of this cmd.
+			ctx := context.Background()
+			if err := session.ConnectRelays(ctx); err != nil {
+				return "", fmt.Errorf("relay connect: %w", err)
 			}
 			nip46Session = session
 			return uri, nil
@@ -1446,21 +1446,22 @@ func main() {
 				if nip46Session == nil {
 					return "", fmt.Errorf("session not initialized")
 				}
-				// Wait for connection
-				ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
-				defer cancel()
-
-				if err := nip46Session.WaitForConnection(ctx); err != nil {
-					return "", err
-				}
-
-				// Get public key
-				pubKey, err := nip46Session.GetPublicKey(ctx)
+				// Short poll — the subscriptions are already active
+				// from ConnectRelays called in OnInitQR. We just
+				// check if the signer's connect event arrived yet.
+				pubKey, err := nip46Session.CheckConnection(3 * time.Second)
 				if err != nil {
-					return "", err
+					return "", err // TUI will retry
 				}
 
-				return pubKey, nil
+				// Got connect — now request the user's public key.
+				ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+				defer cancel()
+				userPubKey, err := nip46Session.GetPublicKey(ctx)
+				if err != nil {
+					return pubKey, nil // fall back to signer pubkey
+				}
+				return userPubKey, nil
 			},
 			// Profile callbacks
 			OnListProfiles: func() ([]tui.ProfileInfo, string, error) {

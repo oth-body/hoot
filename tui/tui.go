@@ -3,6 +3,7 @@ package tui
 import (
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/charmbracelet/bubbles/spinner"
 	"github.com/charmbracelet/bubbles/textinput"
@@ -326,6 +327,19 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.messageStyle = lipgloss.Style{}
 		// Start checking for connection in background
 		return m, m.checkQRConnection
+
+	case qrRetryMsg:
+		// The previous check didn't find a signer connect event yet.
+		// Re-fire after a short delay so we keep polling without
+		// blocking the TUI render loop. tea.Tick fires a callback
+		// after the duration that returns the Cmd to execute.
+		return m, tea.Tick(time.Second, func(t time.Time) tea.Msg {
+			return checkQRTickMsg{}
+		})
+
+	case checkQRTickMsg:
+		// Fired by the retry timer above — run another check.
+		return m, m.checkQRConnection
 	}
 
 	// Update text input
@@ -612,9 +626,22 @@ func (m Model) checkQRConnection() tea.Msg {
 		if err == nil && pubkey != "" {
 			return qrSuccessMsg(pubkey)
 		}
+		// No connection yet — return a retry message so the TUI
+		// re-fires this check after a short delay instead of giving
+		// up silently (the old behavior, which left the screen stuck
+		// on "Waiting for connection..." forever).
+		return qrRetryMsg{}
 	}
 	return nil
 }
+
+// qrRetryMsg signals that the QR connection check should be
+// retried after a short delay.
+type qrRetryMsg struct{}
+
+// checkQRTickMsg is fired by tea.Tick after the retry delay,
+// triggering another checkQRConnection round.
+type checkQRTickMsg struct{}
 
 func (m Model) handleHomeEnter() (tea.Model, tea.Cmd) {
 	switch m.cursor {
