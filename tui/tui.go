@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/charmbracelet/bubbles/spinner"
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
@@ -70,6 +71,7 @@ type Model struct {
 	screen       Screen
 	cursor       int
 	textInput    textinput.Model
+	spinner      spinner.Model
 	message      string
 	messageStyle lipgloss.Style
 
@@ -149,9 +151,15 @@ func NewModel() Model {
 	ti.CharLimit = 256
 	ti.Width = 60
 
+	// Spinner used while waiting on QR init / remote-signer connection.
+	// The Line frame set is plain ASCII so the indicator renders even on
+	// terminals without Unicode support.
+	sp := spinner.New(spinner.WithSpinner(spinner.Line))
+
 	return Model{
 		screen:    ScreenLogin,
 		textInput: ti,
+		spinner:   sp,
 	}
 }
 
@@ -181,11 +189,16 @@ func (m *Model) SetCallbacks(
 }
 
 func (m Model) Init() tea.Cmd {
-	return textinput.Blink
+	return tea.Batch(textinput.Blink, m.spinner.Tick)
 }
 
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	var cmd tea.Cmd
+
+	// Spinner animation tick. The spinner.Model owns its own state and
+	// returns the next TickMsg as a tea.Cmd that we batch below.
+	var spinnerCmd tea.Cmd
+	m.spinner, spinnerCmd = m.spinner.Update(msg)
 
 	// Check if we need to regenerate the QR code
 	if m.qrNeedsRegeneration && m.qrData != "" {
@@ -306,6 +319,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.qrData = msg.uri
 		m.qrNeedsRegeneration = true
 		m.qrReady = true
+		// Clear the "Generating QR code..." banner left over from
+		// handleLoginEnter — the QR is now visible, so showing that
+		// text below it is contradictory and read by users as "stuck".
+		m.message = ""
+		m.messageStyle = lipgloss.Style{}
 		// Start checking for connection in background
 		return m, m.checkQRConnection
 	}
@@ -353,6 +371,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		} else {
 			m.textInput, cmd = m.textInput.Update(msg)
 		}
+	}
+
+	// Batch the spinner tick with whatever other cmd the input produced
+	// so the spinner keeps animating across all Update paths.
+	if spinnerCmd != nil {
+		cmd = tea.Batch(cmd, spinnerCmd)
 	}
 
 	return m, cmd
@@ -912,13 +936,24 @@ func (m Model) viewQRLogin() string {
 	b.WriteString("\n\n")
 
 	if m.qrRendered != "" {
+		// QR is rendered. Don't append the global m.message here — it
+		// could be the leftover "Generating QR code..." string from
+		// handleLoginEnter, which was already cleared in the
+		// qrGeneratedMsg handler. Showing it below the QR would
+		// contradict the QR that's on-screen.
 		b.WriteString(m.qrRendered)
 		b.WriteString("\n\n")
 		b.WriteString(menuStyle.Render("Waiting for connection... scan this with your Amber app."))
 	} else if m.qrData != "" {
-		b.WriteString(menuStyle.Render("Generating QR code..."))
+		// QR data is known but regenerateQR() hasn't produced output yet
+		// (e.g. WindowSizeMsg hasn't arrived or terminal is too small).
+		// Show a live spinner instead of static text — the prior
+		// behavior read as "stuck" because nothing changed.
+		b.WriteString(m.spinner.View() + " Generating QR code...")
 	} else {
-		b.WriteString(menuStyle.Render("Generating connection..."))
+		// No URI yet. Also show a spinner — the previous static text
+		// was indistinguishable from a hung program.
+		b.WriteString(m.spinner.View() + " Generating connection...")
 	}
 
 	content := b.String()
