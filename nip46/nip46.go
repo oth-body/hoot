@@ -405,10 +405,17 @@ func (s *Session) publishToAllRelays(ctx context.Context, event *nostr.Event) er
 	}
 	wg.Wait()
 	close(errCh)
+	successes := 0
+	var lastErr error
 	for err := range errCh {
 		if err != nil {
-			return err
+			lastErr = err
+		} else {
+			successes++
 		}
+	}
+	if successes == 0 {
+		return fmt.Errorf("failed to publish to any relay: %w", lastErr)
 	}
 	return nil
 }
