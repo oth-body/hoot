@@ -1,4 +1,4 @@
-# .goreleaser.yml - Build configuration for hoot
+# .goreleaser.yml - Build configuration for hoot (goreleaser v1)
 # https://goreleaser.com/introduction
 
 project_name: hoot
@@ -37,10 +37,6 @@ archives:
       - README.md
       - relays.txt
       - assets/**/*
-    replacements:
-      amd64: x86_64
-      arm64: aarch64
-      darwin: macOS
 
 checksum:
   name_template: 'SHA256SUMS.txt'
@@ -62,16 +58,3 @@ release:
     name: hoot
   draft: true
   prerelease: auto
-
-brews:
-  - id: hoot
-    github:
-      owner: oth-body
-      name: homebrew-hoot
-    homepage: https://github.com/oth-body/hoot
-    description: A terminal Nostr client
-    license: MIT
-    dependencies:
-      - name: go
-    install: |
-      bin.install "hoot"
