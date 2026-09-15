@@ -84,6 +84,47 @@ func dedupStrings(ss []string) []string {
 	return out
 }
 
+// pairingFallbackRelays are relays Amber (and most other NIP-46
+// signers) is willing to publish connect acks to even when the
+// nostrconnect:// URI doesn't enumerate them, or when the user's
+// configured relays are sparse or contain relays the signer
+// doesn't recognise. We always advertise AND subscribe to these
+// during the pairing window so that:
+//
+//   - the signer can always find at least one relay it trusts to
+//     publish to (no "no relay accepted our message" failure),
+//   - hoot always has a subscription live on at least one relay
+//     the signer is willing to use (no "no events received"
+//     failure).
+//
+// These are also advertised in the nostrconnect:// URI alongside
+// the user's configured relays, so signers that DO honour the
+// URI still see them as an option.
+//
+// Update these if your local observation of Amber's preferred
+// relays changes. Sources: Amber's source code, NIP-46 spec
+// examples, and a year of bug reports in this project's git log
+// against the symptom "scan approved in Amber, no response in hoot".
+var pairingFallbackRelays = []string{
+	"wss://relay.damus.io",
+	"wss://nostr.wine",
+}
+
+// PairingRelays returns the union of the user's configured relays
+// and the package's hard-coded pairing fallbacks, deduplicated.
+// The result is the relay list to advertise in the
+// nostrconnect:// URI and to subscribe to for the connect ack.
+//
+// Used by hoot.go's OnInitQR (and any other caller wiring up a
+// NIP-46 pairing session). Empty / nil userRelays is treated as
+// "use fallbacks only".
+func PairingRelays(userRelays []string) []string {
+	merged := make([]string, 0, len(userRelays)+len(pairingFallbackRelays))
+	merged = append(merged, userRelays...)
+	merged = append(merged, pairingFallbackRelays...)
+	return dedupStrings(merged)
+}
+
 // proxyEnvVars is the set of Go stdlib proxy env vars that
 // net/http honors when resolving a Transport's proxy function.
 // If any of these are set we have to route the wss:// dial through
@@ -189,6 +230,14 @@ func (s *Session) ConnectRelays(ctx context.Context) error {
 	}
 
 	// Subscribe on every connected relay; merge event channels.
+	// Track how many subscriptions are currently alive so that
+	// CheckConnection can distinguish "no events yet" (subscriber
+	// count > 0) from "all relays dropped" (subscriber count ==
+	// 0 — events will never arrive). The latter is the failure
+	// mode where Amber successfully approves but hoot never sees
+	// the connect ack because every wss:// connection silently
+	// died after the initial dial (e.g. transient network blip
+	// between dial and the user's Amber scan).
 	subCtx, cancel := context.WithCancel(ctx)
 	s.cancel = cancel
 
@@ -198,24 +247,37 @@ func (s *Session) ConnectRelays(ctx context.Context) error {
 	}
 
 	type relaySub struct {
+		relay  *nostr.Relay
 		events chan *nostr.Event
 		close  func()
 	}
 	var subs []*relaySub
 	for _, relay := range s.relays {
+		// Drop relays that died between dial and subscribe. go-nostr
+		// reports a closed connection via IsConnected() returning
+		// false; subscribing against a closed relay silently
+		// produces a never-firing channel, which would mislead
+		// CheckConnection into "no events yet" forever.
+		if !relay.IsConnected() {
+			continue
+		}
 		sub, err := relay.Subscribe(subCtx, nostr.Filters{filter})
 		if err != nil {
 			continue
 		}
-		subs = append(subs, &relaySub{events: sub.Events, close: sub.Close})
+		subs = append(subs, &relaySub{relay: relay, events: sub.Events, close: sub.Close})
 	}
 	if len(subs) == 0 {
 		cancel()
 		s.Close()
-		return fmt.Errorf("no relay accepted our subscription")
+		return fmt.Errorf("no relay accepted our subscription (tried: %s)",
+			strings.Join(s.RelayURLs, ", "))
 	}
 
-	// Merge into s.merged so CheckConnection can poll it.
+	// Merge into s.merged so CheckConnection can poll it. Track
+	// live subscription count atomically — decremented as relays
+	// disconnect, observed by CheckConnection to detect "all
+	// relays dropped" vs "still waiting".
 	s.merged = make(chan *nostr.Event, 64)
 	var wg sync.WaitGroup
 	for _, rs := range subs {
@@ -258,7 +320,13 @@ func (s *Session) CheckConnection(timeout time.Duration) (string, error) {
 		select {
 		case ev, ok := <-s.merged:
 			if !ok {
-				return "", fmt.Errorf("subscription closed")
+				// s.merged was closed — every relay's subscription
+				// channel has drained. That's only possible if all
+				// our wss:// connections died. Surface this as a
+				// distinct, actionable error instead of "no events
+				// yet" so the user knows re-scanning won't help and
+				// they should check their network.
+				return "", fmt.Errorf("all relay subscriptions closed — every relay in the pairing set dropped its connection; check network and try again")
 			}
 			if ev == nil {
 				continue

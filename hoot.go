@@ -1442,23 +1442,29 @@ func main() {
 				return os.WriteFile(relayPath, []byte(data), 0600)
 			},
 			OnInitQR: func() (string, error) {
-			// Generate NIP-46 URI with ALL configured relays and
-			// immediately dial + subscribe on them. By the time the
-			// user scans, the subscriptions are active and we won't
-			// miss the signer's connect event.
-			relays := getRelayList()
-			uri, session, err := nip46.GenerateConnectURI(relays, "Hoot")
-			if err != nil {
-				return "", err
-			}
-			// Dial and subscribe in the background of this cmd.
-			ctx := context.Background()
-			if err := session.ConnectRelays(ctx); err != nil {
-				return "", fmt.Errorf("relay connect: %w", err)
-			}
-			nip46Session = session
-			return uri, nil
-		},
+				// Generate NIP-46 URI with ALL configured relays AND
+				// a hard-coded set of relays Amber is known to publish
+				// to (relay.damus.io, nostr.wine). The latter covers
+				// the common failure mode where the user's relays.txt
+				// is sparse or contains relays Amber doesn't recognise
+				// — Amber then publishes to its own preferred relay
+				// instead of the URI's, and hoot's subscription (only
+				// on the user's relays) never sees the connect ack.
+				//
+				// See nip46.PairingRelays for the full rationale.
+				userRelays := getRelayList()
+				uri, session, err := nip46.GenerateConnectURI(nip46.PairingRelays(userRelays), "Hoot")
+				if err != nil {
+					return "", err
+				}
+				// Dial and subscribe in the background of this cmd.
+				ctx := context.Background()
+				if err := session.ConnectRelays(ctx); err != nil {
+					return "", fmt.Errorf("relay connect: %w", err)
+				}
+				nip46Session = session
+				return uri, nil
+			},
 			OnCheckQR: func() (string, error) {
 				if nip46Session == nil {
 					return "", fmt.Errorf("session not initialized")
