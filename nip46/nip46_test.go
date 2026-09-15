@@ -150,3 +150,234 @@ func TestDialRelaysContinuesOnIndividualFailure(t *testing.T) {
 	// opened without a connection so WaitForConnection would error
 	// next — but we stop here.)
 }
+
+// ---------------------------------------------------------------------------
+// Proxy environment detection (regression guard for the "connect to port 9050"
+// failure mode that surfaces as "Amber sign-in failed").
+// ---------------------------------------------------------------------------
+
+// all the *_PROXY env vars we touch. Listed so tests can unset them
+// cleanly without affecting unrelated env state.
+var proxyEnvNames = []string{
+	"HTTPS_PROXY", "https_proxy",
+	"HTTP_PROXY", "http_proxy",
+	"ALL_PROXY", "all_proxy",
+	"SOCKS_PROXY", "socks_proxy",
+	"SOCKS5_PROXY", "socks5_proxy",
+}
+
+func clearProxyEnv(t *testing.T) {
+	t.Helper()
+	for _, name := range proxyEnvNames {
+		t.Setenv(name, "")
+	}
+}
+
+// TestDetectProxyNoEnv: no *_PROXY set -> detectProxy returns ("", nil).
+// Pins the baseline behaviour for every other test.
+func TestDetectProxyNoEnv(t *testing.T) {
+	clearProxyEnv(t)
+	name, u := detectProxy()
+	if name != "" {
+		t.Errorf("expected empty name, got %q", name)
+	}
+	if u != nil {
+		t.Errorf("expected nil URL, got %v", u)
+	}
+}
+
+// TestDetectProxyTor9050: the exact failure mode reported in the
+// bug report — HTTPS_PROXY points at a Tor SOCKS port that isn't
+// running, sign-in errors with "connect: connection refused" against
+// 127.0.0.1:9050. With this fix, detectProxy surfaces that fact
+// so nip46.ConnectRelays can refuse to dial instead of producing
+// the opaque websocket error.
+func TestDetectProxyTor9050(t *testing.T) {
+	clearProxyEnv(t)
+	t.Setenv("HTTPS_PROXY", "socks5h://127.0.0.1:9050")
+
+	name, u := detectProxy()
+	if name != "HTTPS_PROXY" {
+		t.Errorf("expected name=%q, got %q", "HTTPS_PROXY", name)
+	}
+	if u == nil {
+		t.Fatal("expected non-nil URL")
+	}
+	if u.Host != "127.0.0.1:9050" {
+		t.Errorf("expected host=127.0.0.1:9050, got %q", u.Host)
+	}
+	if u.Scheme != "socks5h" {
+		t.Errorf("expected scheme=socks5h, got %q", u.Scheme)
+	}
+}
+
+// TestDetectProxyHTTPSBeatsHTTP: Go's httpproxy uses HTTPS_PROXY for
+// https:// requests and HTTP_PROXY for http://. When only one is set,
+// detectProxy returns that one. Order in proxyEnvVars matches the
+// stdlib lookup (HTTPS_PROXY before HTTP_PROXY).
+func TestDetectProxyHTTPSBeatsHTTP(t *testing.T) {
+	clearProxyEnv(t)
+	t.Setenv("HTTP_PROXY", "http://h.local:8080")
+	t.Setenv("HTTPS_PROXY", "http://s.local:8443")
+
+	name, u := detectProxy()
+	if name != "HTTPS_PROXY" {
+		t.Errorf("expected HTTPS_PROXY to win, got %q", name)
+	}
+	if u == nil || u.Host != "s.local:8443" {
+		t.Errorf("expected s.local:8443, got %v", u)
+	}
+}
+
+// TestDetectProxyAllProxyFallback: when no scheme-specific proxy is
+// set but ALL_PROXY is, ALL_PROXY wins. (Go's httpproxy checks
+// scheme-specific vars first, then ALL_PROXY as a universal fallback.)
+func TestDetectProxyAllProxyFallback(t *testing.T) {
+	clearProxyEnv(t)
+	t.Setenv("ALL_PROXY", "http://a.local:3128")
+
+	name, u := detectProxy()
+	if name != "ALL_PROXY" {
+		t.Errorf("expected ALL_PROXY, got %q", name)
+	}
+	if u == nil || u.Host != "a.local:3128" {
+		t.Errorf("expected a.local:3128, got %v", u)
+	}
+}
+
+// TestDetectProxySkipsMalformed: garbage in HTTPS_PROXY should not
+// block detection of a valid HTTP_PROXY below it — Go's stdlib also
+// tolerates parse errors silently and falls through.
+func TestDetectProxySkipsMalformed(t *testing.T) {
+	clearProxyEnv(t)
+	t.Setenv("HTTPS_PROXY", "not a url at all")
+	t.Setenv("HTTP_PROXY", "http://valid.local:8080")
+
+	name, u := detectProxy()
+	if name != "HTTP_PROXY" {
+		t.Errorf("expected fallthrough to HTTP_PROXY, got %q", name)
+	}
+	if u == nil || u.Host != "valid.local:8080" {
+		t.Errorf("expected valid.local:8080, got %v", u)
+	}
+}
+
+// TestDetectProxyEmptyValue: env var set but empty is treated as unset.
+// Matches Go's httpproxy behaviour.
+func TestDetectProxyEmptyValue(t *testing.T) {
+	clearProxyEnv(t)
+	t.Setenv("HTTPS_PROXY", "")
+	t.Setenv("HTTP_PROXY", "http://e.local:8080")
+
+	name, u := detectProxy()
+	if name != "HTTP_PROXY" {
+		t.Errorf("expected fallthrough past empty HTTPS_PROXY, got %q", name)
+	}
+	if u == nil || u.Host != "e.local:8080" {
+		t.Errorf("expected e.local:8080, got %v", u)
+	}
+}
+
+// TestDetectProxySchemeRequiredRe: a value with no scheme is rejected
+// even if it parses with a host. url.Parse treats "example.com:8080"
+// as Path=... Host="" Scheme="", so the Scheme check guards this.
+func TestDetectProxySchemeRequiredRe(t *testing.T) {
+	clearProxyEnv(t)
+	t.Setenv("HTTPS_PROXY", "example.com:8080")
+
+	name, u := detectProxy()
+	if name != "" || u != nil {
+		t.Errorf("expected scheme-less URL to be rejected, got %s=%v", name, u)
+	}
+}
+
+// TestConnectRelaysRefusesProxyEnv: the public API. With any
+// *_PROXY pointing at an unreachable host, ConnectRelays returns
+// a non-nil error that mentions the env var name and the dial
+// target — not a generic websocket-dial error. This is the
+// user-visible fix for the "connect to port 9050" bug.
+func TestConnectRelaysRefusesProxyEnv(t *testing.T) {
+	clearProxyEnv(t)
+	t.Setenv("HTTPS_PROXY", "socks5h://127.0.0.1:9050")
+
+	s := &Session{
+		ClientPrivateKey: "0000000000000000000000000000000000000000000000000000000000000001",
+		ClientPublicKey:  "0000000000000000000000000000000000000000000000000000000000000002",
+		RelayURLs:        []string{"wss://relay.damus.io"},
+	}
+
+	err := s.ConnectRelays(nil) // ctx unused because we fail fast before dialing
+	if err == nil {
+		t.Fatal("expected error from ConnectRelays with HTTPS_PROXY set, got nil")
+	}
+
+	msg := err.Error()
+	if !strings.Contains(msg, "HTTPS_PROXY") {
+		t.Errorf("expected error to mention HTTPS_PROXY, got: %v", err)
+	}
+	if !strings.Contains(msg, "9050") {
+		t.Errorf("expected error to mention the proxy host:port (9050), got: %v", err)
+	}
+}
+
+// TestConnectRelaysRejectsBlankURL: regression guard. With no
+// relay URLs configured, ConnectRelays returns a clear error
+// instead of letting the dial code blow up later.
+func TestConnectRelaysRejectsBlankURL(t *testing.T) {
+	clearProxyEnv(t)
+	s := &Session{
+		ClientPrivateKey: "0000000000000000000000000000000000000000000000000000000000000001",
+		ClientPublicKey:  "0000000000000000000000000000000000000000000000000000000000000002",
+		RelayURLs:        nil,
+	}
+	err := s.ConnectRelays(nil)
+	if err == nil {
+		t.Fatal("expected error for blank relay URLs, got nil")
+	}
+	if !strings.Contains(err.Error(), "no relay URLs") {
+		t.Errorf("expected 'no relay URLs' in error, got: %v", err)
+	}
+}
+
+// TestConnectRelaysRejectsNonWSSURL: regression guard. A relay
+// URL that's not ws:// or wss:// (e.g. an http:// typo or a bare
+// host) is rejected up front.
+func TestConnectRelaysRejectsNonWSSURL(t *testing.T) {
+	clearProxyEnv(t)
+	cases := [][]string{
+		{"http://relay.damus.io"},
+		{"relay.damus.io"},
+		{"ftp://relay.damus.io"},
+		{"not a url"},
+		// Mixed: one good, one bad — should still fail on the bad one.
+		{"wss://relay.damus.io", "http://other.invalid"},
+	}
+	for _, urls := range cases {
+		t.Run(strings.Join(urls, ","), func(t *testing.T) {
+			s := &Session{
+				ClientPrivateKey: "0000000000000000000000000000000000000000000000000000000000000001",
+				ClientPublicKey:  "0000000000000000000000000000000000000000000000000000000000000002",
+				RelayURLs:        urls,
+			}
+			err := s.ConnectRelays(nil)
+			if err == nil {
+				t.Fatalf("expected error for relay URLs %v, got nil", urls)
+			}
+			if !strings.Contains(err.Error(), "invalid relay URL") {
+				t.Errorf("expected 'invalid relay URL' in error, got: %v", err)
+			}
+		})
+	}
+}
+
+// TestSessionCloseIsIdempotent: Close on a session that never
+// connected (no proxy error fired the dial, so s.relays is nil)
+// must not panic. Pins that the nil-relay guard added by the
+// upstream Close implementation is preserved.
+func TestSessionCloseIsIdempotent(t *testing.T) {
+	clearProxyEnv(t)
+	s := &Session{RelayURLs: []string{"wss://relay.damus.io"}}
+	// Should not panic.
+	s.Close()
+	s.Close() // twice
+}
