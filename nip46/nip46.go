@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log"
 	"net/url"
 	"os"
 	"strings"
@@ -112,16 +113,21 @@ var pairingFallbackRelays = []string{
 
 // PairingRelays returns the union of the user's configured relays
 // and the package's hard-coded pairing fallbacks, deduplicated.
-// The result is the relay list to advertise in the
-// nostrconnect:// URI and to subscribe to for the connect ack.
 //
-// Used by hoot.go's OnInitQR (and any other caller wiring up a
-// NIP-46 pairing session). Empty / nil userRelays is treated as
-// "use fallbacks only".
+// Ordering matters: signers that pick from the nostrconnect://
+// URI tend to use the FIRST listed relay. We put the fallback
+// relays first so that even when the user's relays.txt is full
+// of stale or unreachable relays (a common case — relay.nostr.band
+// has been dead for over a year as of writing), the signer will
+// pick a relay we know is alive, the publish will succeed, and
+// the connect ack will arrive.
+//
+// User relays follow the fallbacks. Empty / nil userRelays is
+// treated as "use fallbacks only".
 func PairingRelays(userRelays []string) []string {
 	merged := make([]string, 0, len(userRelays)+len(pairingFallbackRelays))
-	merged = append(merged, userRelays...)
 	merged = append(merged, pairingFallbackRelays...)
+	merged = append(merged, userRelays...)
 	return dedupStrings(merged)
 }
 
@@ -222,12 +228,20 @@ func (s *Session) ConnectRelays(ctx context.Context) error {
 
 	const dialTimeout = 10 * time.Second
 
-	// Dial
-	s.relays = s.dialRelays(ctx, dialTimeout)
-	if len(s.relays) == 0 {
+	// Dial. Note: this can fail for some user-configured relays
+	// without killing the session — the pair of hard-coded
+	// fallbacks in Session.RelayURLs is usually enough to keep
+	// at least one alive relay. We surface a warning to stderr
+	// for any user relay that didn't come up so the user can
+	// clean up a stale relays.txt without having to inspect
+	// every dial result manually.
+	connected := s.dialRelays(ctx, dialTimeout)
+	s.relays = connected
+	if len(connected) == 0 {
 		return fmt.Errorf("could not connect to any relay (tried: %s)",
 			strings.Join(s.RelayURLs, ", "))
 	}
+	warnUnreachableRelays(s.RelayURLs, connected)
 
 	// Subscribe on every connected relay; merge event channels.
 	// Track how many subscriptions are currently alive so that
@@ -386,6 +400,45 @@ func (s *Session) dialRelays(ctx context.Context, perRelayTimeout time.Duration)
 		}
 	}
 	return connected
+}
+
+// warnUnreachableRelays logs a one-line stderr warning for any
+// configured relay that didn't come up during ConnectRelays.
+// Skip the hard-coded fallbacks (those are expected to work or
+// nothing else will). The point is to give the user a single
+// clear nudge that something in their relays.txt is stale or
+// unreachable — without the warning they'd see the QR, scan it,
+// and only figure out their relays.txt is broken when Amber fails
+// to publish.
+//
+// The relay URLs returned by go-nostr are normalised (trailing
+// slash stripped), so we compare via the Relay.URL field. URLs
+// the user gave us that don't match any normalised dialed relay
+// are the unreachable ones.
+func warnUnreachableRelays(configured []string, connected []*nostr.Relay) {
+	live := make(map[string]struct{}, len(connected))
+	for _, r := range connected {
+		live[r.URL] = struct{}{}
+	}
+	fallback := make(map[string]struct{}, len(pairingFallbackRelays))
+	for _, u := range pairingFallbackRelays {
+		fallback[u] = struct{}{}
+	}
+	var dead []string
+	for _, u := range configured {
+		if _, ok := live[u]; ok {
+			continue
+		}
+		if _, isFallback := fallback[u]; isFallback {
+			continue
+		}
+		dead = append(dead, u)
+	}
+	if len(dead) == 0 {
+		return
+	}
+	log.Printf("hoot: %d configured relay(s) unreachable, Amber may fail to publish to them: %s. Edit ~/.config/hoot/relays.txt (or ./relays.txt) to remove them.",
+		len(dead), strings.Join(dead, ", "))
 }
 
 // GetPublicKey requests the user's public key from the signer.
