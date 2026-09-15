@@ -11,6 +11,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 	"github.com/muesli/reflow/ansi"
 
+	"hoot/nip46"
 	"github.com/mdp/qrterminal/v3"
 )
 
@@ -332,6 +333,18 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Start checking for connection in background
 		return m, m.checkQRConnection
 
+	case qrInitErrorMsg:
+		// OnInitQR failed (proxy env var set, all relays unreachable,
+		// bad relays.txt, etc.). Surface the actionable error from
+		// nip46.go instead of leaving "Generating connection..."
+		// on screen forever. Stay on ScreenQRLogin so the user can
+		// press Esc to back out; the message goes into m.message so
+		// viewQRLogin will pick it up at the bottom of the block.
+		m.qrReady = false
+		m.message = fmt.Sprintf("Sign-in failed: %v", msg.err)
+		m.messageStyle = errorStyle
+		return m, nil
+
 	case qrRetryMsg:
 		// The previous check didn't find a signer connect event yet.
 		// Re-fire after a short delay so we keep polling without
@@ -561,11 +574,20 @@ func (m Model) handleLoginEnter() (tea.Model, tea.Cmd) {
 
 type qrSuccessMsg string
 
+type qrInitErrorMsg struct {
+	err error
+}
+
 func (m Model) initQR() tea.Msg {
 	if m.onInitQR != nil {
 		uri, err := m.onInitQR()
 		if err != nil {
-			return nil
+			// Previously this returned nil and the error was
+			// silently swallowed — the user saw the QR screen
+			// forever with "Generating connection..." and no
+			// clue what to fix. Surface the error so viewQRLogin
+			// can render an actionable message instead.
+			return qrInitErrorMsg{err: err}
 		}
 		return qrGeneratedMsg{uri: uri}
 	}
@@ -630,10 +652,17 @@ func (m Model) checkQRConnection() tea.Msg {
 		if err == nil && pubkey != "" {
 			return qrSuccessMsg(pubkey)
 		}
-		// No connection yet — return a retry message so the TUI
-		// re-fires this check after a short delay instead of giving
-		// up silently (the old behavior, which left the screen stuck
-		// on "Waiting for connection..." forever).
+		if err != nil && !nip46.IsRetryable(err) {
+			// Hard failure (proxy refusal, zero relays connected,
+			// all subscriptions dropped, etc.). Don't keep retrying
+			// — show the user the actionable message via the same
+			// error path as qrInitErrorMsg.
+			return qrInitErrorMsg{err: err}
+		}
+		// Transient (ErrTimeout with Open > 0, deadline, cancel).
+		// Re-fire after a short delay so we keep polling without
+		// blocking the TUI render loop. tea.Tick fires a callback
+		// after the duration that returns the Cmd to execute.
 		return qrRetryMsg{}
 	}
 	return nil

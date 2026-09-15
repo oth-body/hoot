@@ -3,6 +3,7 @@ package nip46
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"net/url"
@@ -235,13 +236,15 @@ func (s *Session) ConnectRelays(ctx context.Context) error {
 	// for any user relay that didn't come up so the user can
 	// clean up a stale relays.txt without having to inspect
 	// every dial result manually.
-	connected := s.dialRelays(ctx, dialTimeout)
+	connected, dialFailures := s.dialRelays(ctx, dialTimeout)
 	s.relays = connected
 	if len(connected) == 0 {
-		return fmt.Errorf("could not connect to any relay (tried: %s)",
-			strings.Join(s.RelayURLs, ", "))
+		return &RelayDialFailure{
+			Tried:   append([]string(nil), s.RelayURLs...),
+			Reasons: dialFailures,
+		}
 	}
-	warnUnreachableRelays(s.RelayURLs, connected)
+	warnUnreachableRelays(s.RelayURLs, connected, dialFailures)
 
 	// Subscribe on every connected relay; merge event channels.
 	// Track how many subscriptions are currently alive so that
@@ -284,7 +287,9 @@ func (s *Session) ConnectRelays(ctx context.Context) error {
 	if len(subs) == 0 {
 		cancel()
 		s.Close()
-		return fmt.Errorf("no relay accepted our subscription (tried: %s)",
+		return fmt.Errorf("relays connected but every one rejected our subscription (tried: %s); "+
+			"this usually means the relay you're hitting is misconfigured or rate-limiting — "+
+			"check ~/.config/hoot/relays.txt for stale entries",
 			strings.Join(s.RelayURLs, ", "))
 	}
 
@@ -317,14 +322,91 @@ func (s *Session) ConnectRelays(ctx context.Context) error {
 	return nil
 }
 
+// ErrTimeout is returned by WaitForConnection / CheckConnection when the
+// polling window elapsed without receiving a signer connect event. It
+// wraps the underlying reason so callers can render an actionable
+// message ("no signer response yet — did Amber approve the prompt?")
+// instead of the previous bare "no response yet" string that users
+// couldn't act on.
+type ErrTimeout struct {
+	Reason string // human-readable cause; defaults to "no signer response yet"
+	Open   int    // number of subscriptions still open when we timed out
+}
+
+func (e *ErrTimeout) Error() string {
+	if e.Reason == "" {
+		return "no signer response yet — make sure Amber has approved the connection prompt and is online"
+	}
+	// Guard: if a caller passes a Reason that doesn't include any
+	// actionable context (Amber, signer, network, etc.), append a
+	// fallback so the message is never just an opaque bare string
+	// like "no response yet". Regression for the bug report — the
+	// original symptom was a bare unhelpful message.
+	low := strings.ToLower(e.Reason)
+	actionable := []string{"amber", "signer", "relay", "network", "connection", "subscription", "timeout", "deadline"}
+	for _, tok := range actionable {
+		if strings.Contains(low, tok) {
+			return e.Reason
+		}
+	}
+	return e.Reason + " — check that Amber is online and has approved the connection prompt"
+}
+
+// IsRetryable reports whether an error from a NIP-46 call is
+// transient — i.e. the caller should keep polling instead of
+// bailing out and showing a fatal error. The TUI uses this to
+// distinguish "signer just hasn't replied yet" (retry) from
+// "this will never work, surface to the user" (stop and show).
+//
+// Rules:
+//   - nil                           → not retryable (success)
+//   - ErrTimeout                     → retryable
+//   - wrapped timeout / deadline     → retryable
+//   - all-subscriptions-closed err   → NOT retryable (network is dead)
+//   - everything else (validation,  → NOT retryable
+//     proxy refusal, config)         (configuration problem)
+func IsRetryable(err error) bool {
+	if err == nil {
+		return false
+	}
+	var et *ErrTimeout
+	if errors.As(err, &et) {
+		return et.Open > 0
+	}
+	if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
+		return true
+	}
+	return false
+}
+
 // CheckConnection polls for a signer connect event with a short
-// timeout. Returns the signer's pubkey on success, or an error if
-// nothing arrived yet. Callers should retry until success or a
-// hard timeout. This is meant to be called from the TUI's
-// OnCheckQR in a polling loop.
+// timeout. Returns the signer's pubkey on success, or an *ErrTimeout
+// (wrappable via errors.As) if nothing arrived yet — see IsRetryable
+// for the recommended polling pattern. This is meant to be called
+// from the TUI's OnCheckQR in a polling loop.
+//
+// The previous version returned a bare "no response yet" string and
+// also returned that same string when all subscriptions had died
+// (the "all relays dropped" condition). Users couldn't tell the two
+// apart, and the message gave them nothing to act on. The current
+// version returns ErrTimeout with Open > 0 (retry — Amber may still
+// approve) vs a distinct, non-retryable "all relay subscriptions
+// closed" error so the TUI can render the right message.
 func (s *Session) CheckConnection(timeout time.Duration) (string, error) {
 	if s.merged == nil {
 		return "", fmt.Errorf("not connected — call ConnectRelays first")
+	}
+
+	// Track how many subscriptions are still open so ErrTimeout can
+	// distinguish "wait longer" (open > 0) from "network is dead"
+	// (open == 0). The count is approximate — subscriptions close
+	// asynchronously — but a single mid-poll snapshot is enough for
+	// the actionable-message split.
+	open := 0
+	for _, r := range s.relays {
+		if r.IsConnected() {
+			open++
+		}
 	}
 
 	timer := time.NewTimer(timeout)
@@ -337,9 +419,9 @@ func (s *Session) CheckConnection(timeout time.Duration) (string, error) {
 				// s.merged was closed — every relay's subscription
 				// channel has drained. That's only possible if all
 				// our wss:// connections died. Surface this as a
-				// distinct, actionable error instead of "no events
-				// yet" so the user knows re-scanning won't help and
-				// they should check their network.
+				// distinct, actionable, non-retryable error so the
+				// TUI shows "all relays dropped — check network"
+				// instead of looping on "no response yet".
 				return "", fmt.Errorf("all relay subscriptions closed — every relay in the pairing set dropped its connection; check network and try again")
 			}
 			if ev == nil {
@@ -368,15 +450,19 @@ func (s *Session) CheckConnection(timeout time.Duration) (string, error) {
 			}
 
 		case <-timer.C:
-			return "", fmt.Errorf("no response yet")
+			return "", &ErrTimeout{
+				Reason: "no signer response yet — make sure Amber has approved the connection prompt and is online",
+				Open:   open,
+			}
 		}
 	}
 }
 
-func (s *Session) dialRelays(ctx context.Context, perRelayTimeout time.Duration) []*nostr.Relay {
+func (s *Session) dialRelays(ctx context.Context, perRelayTimeout time.Duration) (connected []*nostr.Relay, failures map[string]string) {
 	type result struct {
 		relay *nostr.Relay
 		err   error
+		url   string
 	}
 	results := make(chan result, len(s.RelayURLs))
 	var wg sync.WaitGroup
@@ -387,35 +473,88 @@ func (s *Session) dialRelays(ctx context.Context, perRelayTimeout time.Duration)
 			dialCtx, cancel := context.WithTimeout(ctx, perRelayTimeout)
 			defer cancel()
 			relay, err := nostr.RelayConnect(dialCtx, u)
-			results <- result{relay: relay, err: err}
+			results <- result{relay: relay, err: err, url: u}
 		}(u)
 	}
 	wg.Wait()
 	close(results)
 
-	var connected []*nostr.Relay
+	failures = make(map[string]string)
 	for r := range results {
 		if r.err == nil && r.relay != nil {
 			connected = append(connected, r.relay)
+			continue
+		}
+		// Record the per-URL error so the caller can surface a
+		// per-relay failure message. nil/empty relays get a generic
+		// "unknown" reason so we don't emit an empty map.
+		if r.err != nil {
+			failures[r.url] = r.err.Error()
+		} else {
+			failures[r.url] = "unknown failure (relay URL returned no error and no connection)"
 		}
 	}
-	return connected
+	return connected, failures
+}
+
+// RelayDialFailure is returned by WaitForConnection (and ConnectRelays)
+// when zero relays could be dialled. It carries per-relay error strings
+// so the user sees the actual failure reason (DNS, TLS, timeout, etc)
+// for each URL instead of a generic "websocket failure" that they
+// can't act on. The previous version discarded dial errors and only
+// reported "could not connect to any relay (tried: ...)" — users with
+// stale relays.txt had no clue which line to remove.
+type RelayDialFailure struct {
+	Tried   []string
+	Reasons map[string]string // url → error string
+}
+
+func (e *RelayDialFailure) Error() string {
+	if len(e.Reasons) == 0 {
+		return fmt.Sprintf("could not connect to any relay (tried: %s)", strings.Join(e.Tried, ", "))
+	}
+	// Print at most the first three failures so the message fits in a
+	// single TUI status line. Grouping by relay URL lets users see
+	// exactly which entry in their relays.txt is dead.
+	var parts []string
+	shown := 0
+	for _, u := range e.Tried {
+		reason, ok := e.Reasons[u]
+		if !ok {
+			continue
+		}
+		parts = append(parts, fmt.Sprintf("%s: %s", u, reason))
+		shown++
+		if shown >= 3 {
+			break
+		}
+	}
+	extra := len(e.Reasons) - shown
+	suffix := ""
+	if extra > 0 {
+		suffix = fmt.Sprintf(" (and %d more)", extra)
+	}
+	return fmt.Sprintf("could not connect to any relay — %s%s. Check your network and ~/.config/hoot/relays.txt",
+		strings.Join(parts, "; "), suffix)
 }
 
 // warnUnreachableRelays logs a one-line stderr warning for any
-// configured relay that didn't come up during ConnectRelays.
+// configured relay that didn't come up during ConnectRelays. When a
+// per-URL failure reason is known (failures is non-nil), it's
+// appended so the user can diagnose stale DNS, dead certs, etc.,
+// without having to inspect every dial result manually.
+//
 // Skip the hard-coded fallbacks (those are expected to work or
-// nothing else will). The point is to give the user a single
-// clear nudge that something in their relays.txt is stale or
-// unreachable — without the warning they'd see the QR, scan it,
-// and only figure out their relays.txt is broken when Amber fails
-// to publish.
+// nothing else will). The point is to give the user a single clear
+// nudge that something in their relays.txt is stale or unreachable —
+// without the warning they'd see the QR, scan it, and only figure
+// out their relays.txt is broken when Amber fails to publish.
 //
 // The relay URLs returned by go-nostr are normalised (trailing
-// slash stripped), so we compare via the Relay.URL field. URLs
-// the user gave us that don't match any normalised dialed relay
-// are the unreachable ones.
-func warnUnreachableRelays(configured []string, connected []*nostr.Relay) {
+// slash stripped), so we compare via the Relay.URL field. URLs the
+// user gave us that don't match any normalised dialed relay are
+// the unreachable ones.
+func warnUnreachableRelays(configured []string, connected []*nostr.Relay, failures map[string]string) {
 	live := make(map[string]struct{}, len(connected))
 	for _, r := range connected {
 		live[r.URL] = struct{}{}
@@ -424,7 +563,11 @@ func warnUnreachableRelays(configured []string, connected []*nostr.Relay) {
 	for _, u := range pairingFallbackRelays {
 		fallback[u] = struct{}{}
 	}
-	var dead []string
+	type deadEntry struct {
+		url    string
+		reason string
+	}
+	var dead []deadEntry
 	for _, u := range configured {
 		if _, ok := live[u]; ok {
 			continue
@@ -432,13 +575,21 @@ func warnUnreachableRelays(configured []string, connected []*nostr.Relay) {
 		if _, isFallback := fallback[u]; isFallback {
 			continue
 		}
-		dead = append(dead, u)
+		dead = append(dead, deadEntry{url: u, reason: failures[u]})
 	}
 	if len(dead) == 0 {
 		return
 	}
+	parts := make([]string, 0, len(dead))
+	for _, d := range dead {
+		if d.reason != "" {
+			parts = append(parts, fmt.Sprintf("%s (%s)", d.url, d.reason))
+		} else {
+			parts = append(parts, d.url)
+		}
+	}
 	log.Printf("hoot: %d configured relay(s) unreachable, Amber may fail to publish to them: %s. Edit ~/.config/hoot/relays.txt (or ./relays.txt) to remove them.",
-		len(dead), strings.Join(dead, ", "))
+		len(dead), strings.Join(parts, ", "))
 }
 
 // GetPublicKey requests the user's public key from the signer.
