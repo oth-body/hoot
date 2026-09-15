@@ -303,6 +303,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				if m.cursor < limit {
 					m.cursor++
 				}
+			case ScreenHome:
+				if m.cursor < 7 {
+					m.cursor++
+				}
 			default:
 				m.cursor++
 			}
@@ -343,7 +347,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	}
 
 	// Update text input
-	if (m.screen == ScreenLogin && (m.cursor == 50 || m.cursor == 100)) || m.screen == ScreenPost || m.screen == ScreenTip || m.screen == ScreenReplies || (m.screen == ScreenRelays && m.addingRelay) {
+	if (m.screen == ScreenLogin && (m.cursor == 50 || m.cursor == 51 || m.cursor == 100 || m.cursor == 200)) || m.screen == ScreenPost || m.screen == ScreenTip || m.screen == ScreenReplies || (m.screen == ScreenRelays && m.addingRelay) {
 		// Only update input if we are in input mode (not menu selection mode)
 		// For Login: if hasKey (Input mode) OR if !hasKey and cursor=0 (Nsec Entry? No, cursor 0 is menu choice)
 		// Wait, if !hasKey:
@@ -378,7 +382,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				// The previous code reused cursor=0 for menu. This is confusing.
 
 				// Using cursor=50 for Nsec Entry, 100 for Password/Save choice.
-				if m.cursor == 50 || m.cursor == 100 {
+				if m.cursor == 50 || m.cursor == 51 || m.cursor == 100 || m.cursor == 200 {
 					m.textInput, cmd = m.textInput.Update(msg)
 				}
 			}

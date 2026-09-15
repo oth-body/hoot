@@ -698,7 +698,8 @@ func getDMs(privateKey string) ([]tui.FeedPost, error) {
 			}
 
 			// Decrypt the DM content
-			decrypted, err := nip04.Decrypt(ev.Content, []byte(privateKey))
+			ss, _ := nip04.ComputeSharedSecret(ev.PubKey, privateKey)
+			decrypted, err := nip04.Decrypt(ev.Content, ss)
 			if err != nil {
 				continue // Skip if we can't decrypt
 			}
@@ -787,6 +788,7 @@ func getReactions(eventID string) ([]tui.FeedPost, error) {
 // publishPostTUI publishes a note using either NIP-46 or local key
 func publishPostTUI(content string) error {
 	var event nostr.Event
+	var err error
 	event.Kind = 1
 	event.Content = content
 	event.CreatedAt = nostr.Now()
@@ -807,22 +809,28 @@ func publishPostTUI(content string) error {
 		if localPrivateKey == "" {
 			return fmt.Errorf("no active session or local key")
 		}
-		event.PubKey, _ = nostr.GetPublicKey(localPrivateKey)
-		event.Sign(localPrivateKey)
+		event.PubKey, err = nostr.GetPublicKey(localPrivateKey)
+		if err != nil {
+			return fmt.Errorf("failed to get public key: %w", err)
+		}
+		if err := event.Sign(localPrivateKey); err != nil {
+			return fmt.Errorf("failed to sign event: %w", err)
+		}
 	}
 
 	success := 0
 	for _, url := range relays {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
 		relay, err := nostr.RelayConnect(ctx, url)
 		if err != nil {
+			cancel()
 			continue
 		}
 		if err := relay.Publish(ctx, event); err == nil {
 			success++
 		}
 		relay.Close()
+		cancel()
 	}
 
 	if success == 0 {
@@ -904,12 +912,12 @@ func editProfile(privateKey, newContent, pubKey string, relays []string) {
 
 // registerAsHandler registers the app as a handler for specific kinds.
 func registerAsHandler(privateKey, publicKey string, kinds []int, platforms map[string]string) error {
-	// Create a kind 1984 event for handler registration
+	// Create a kind 31990 event for handler registration (NIP-89)
 	event := nostr.Event{
 		PubKey:    publicKey,
 		CreatedAt: nostr.Timestamp(time.Now().Unix()),
-		Kind:      1984,
-		Tags:      nostr.Tags{},
+		Kind:      31990,
+		Tags:      nostr.Tags{{"d", "hoot"}},
 		Content:   "",
 	}
 
@@ -955,7 +963,7 @@ func recommendApp(privateKey, publicKey, handlerPubKey, handlerDIdentifier strin
 		CreatedAt: nostr.Timestamp(time.Now().Unix()),
 		Kind:      1985,
 		Tags: nostr.Tags{
-			{"a", fmt.Sprintf("%s:%s:%d", handlerPubKey, handlerDIdentifier, kind)},
+			{"a", fmt.Sprintf("%d:%s:%s", kind, handlerPubKey, handlerDIdentifier)},
 			{"p", platform},
 		},
 		Content: relayHint,
@@ -996,7 +1004,7 @@ func findHandlers(kind int) ([]struct {
 	// Use relay list from file or default
 	relays := getRelayList()
 	filter := nostr.Filter{
-		Kinds: []int{1984},
+		Kinds: []int{31990},
 		Tags:  nostr.TagMap{"k": []string{fmt.Sprintf("%d", kind)}},
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -1033,7 +1041,7 @@ func findHandlers(kind int) ([]struct {
 			}
 
 			for _, tag := range ev.Tags {
-				if tag[0] == "k" {
+				if len(tag) > 1 && tag[0] == "k" {
 					kind, err := strconv.Atoi(tag[1])
 					if err == nil {
 						handler.SupportedKinds = append(handler.SupportedKinds, kind)
@@ -1303,7 +1311,8 @@ func extractLud16(pubKey string, relays []string) (string, error) {
 func main() {
 	// Initialize cache for improved performance
 	configDir := getConfigDir()
-	eventCache, err := cache.New(configDir)
+	var err error
+	eventCache, err = cache.New(configDir)
 	if err != nil {
 		log.Printf("Warning: failed to initialize cache: %v", err)
 	} else {
@@ -1769,7 +1778,7 @@ func main() {
 
 	// Handle DMs action with loading.
 	if *dmsPtr {
-		_ = withLoading("Loading DMs", func() error {
+		err = withLoading("Loading DMs", func() error {
 			dms, err := getDMs(sk)
 			if err != nil {
 				return fmt.Errorf("failed to load DMs: %w", err)
@@ -1788,7 +1797,7 @@ func main() {
 
 	// Handle replies action with loading.
 	if *repliesPtr != "" {
-		_ = withLoading("Loading replies", func() error {
+		err = withLoading("Loading replies", func() error {
 			replies, err := getReactions(*repliesPtr)
 			if err != nil {
 				return fmt.Errorf("failed to load replies: %w", err)
