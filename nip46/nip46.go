@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/url"
+	"os"
 	"strings"
 	"sync"
 	"time"
@@ -83,6 +84,68 @@ func dedupStrings(ss []string) []string {
 	return out
 }
 
+// proxyEnvVars is the set of Go stdlib proxy env vars that
+// net/http honors when resolving a Transport's proxy function.
+// If any of these are set we have to route the wss:// dial through
+// the proxy, and if the proxy isn't running (e.g. a Tor listener
+// that isn't started) the dial fails with "connect: connection
+// refused" pointing at the proxy port — which has been the
+// dominant "Amber sign-in failed" complaint in practice. We
+// check this here so we can surface a useful error message
+// instead of letting the dial error bubble up unannotated.
+//
+// Order matches Go's net/http/httputil.preferedProxyScheme lookup
+// (HTTPS_PROXY, then ALL_PROXY, then HTTP_PROXY, then scheme-
+// specific socks fallbacks) — the first env var with a parseable
+// URL wins. See golang.org/x/net/http/httpproxy for the canonical
+// resolution.
+var proxyEnvVars = []string{
+	"HTTPS_PROXY", "https_proxy",
+	"HTTP_PROXY", "http_proxy",
+	"ALL_PROXY", "all_proxy",
+	"SOCKS_PROXY", "socks_proxy",
+	"SOCKS5_PROXY", "socks5_proxy",
+}
+
+// detectProxy returns the first proxy env var that's set and the
+// resolved scheme://host:port it points at, or "" / nil if no
+// proxy env var is set. Empty values and malformed URLs are
+// skipped — they aren't usable by Go's net/http transport either,
+// so refusing to act on them matches stdlib behaviour.
+func detectProxy() (string, *url.URL) {
+	for _, name := range proxyEnvVars {
+		raw := os.Getenv(name)
+		if raw == "" {
+			continue
+		}
+		u, err := url.Parse(raw)
+		if err != nil || u.Scheme == "" || u.Host == "" {
+			continue
+		}
+		return name, u
+	}
+	return "", nil
+}
+
+// validateRelayURLs rejects blank URLs and anything that isn't
+// ws:// or wss://. Returns the first invalid URL it finds so the
+// caller can include it in the error message.
+func validateRelayURLs(urls []string) error {
+	if len(urls) == 0 {
+		return fmt.Errorf("no relay URLs configured for NIP-46 session")
+	}
+	for _, raw := range urls {
+		if raw == "" {
+			return fmt.Errorf("empty relay URL in session")
+		}
+		u, err := url.Parse(raw)
+		if err != nil || (u.Scheme != "ws" && u.Scheme != "wss") {
+			return fmt.Errorf("invalid relay URL %q: must be ws:// or wss://", raw)
+		}
+	}
+	return nil
+}
+
 // ConnectRelays dials every configured relay in parallel and
 // subscribes for NIP-46 kind 24133 events addressed to our client
 // pubkey. Call this from OnInitQR (while generating the QR) so
@@ -90,6 +153,32 @@ func dedupStrings(ss []string) []string {
 // active. Errors on individual relays are skipped; only a total
 // failure (zero relays connected) returns an error.
 func (s *Session) ConnectRelays(ctx context.Context) error {
+	// Validate the configured relay URLs up front. A blank or
+	// malformed URL would otherwise surface as a confusing
+	// websocket error mid-dial.
+	if err := validateRelayURLs(s.RelayURLs); err != nil {
+		return err
+	}
+
+	// Surface inherited proxy env vars before we dial. The most
+	// common sign-in failure has been "connect: connection
+	// refused" against a proxy port (e.g. 9050) that the user
+	// isn't running because they don't actually want a Tor exit —
+	// they inherited HTTPS_PROXY from a launcher or shell.
+	// Refuse the dial up front so the user gets a clear, actionable
+	// message instead of a generic websocket error. Matches what
+	// every other Nostr TUI does — nak, lume, etc. — none of them
+	// proxy wss:// connections by default.
+	if name, proxy := detectProxy(); proxy != nil {
+		return fmt.Errorf(
+			"refusing to dial relays through %s=%s://%s: "+
+				"NIP-46 sign-in requires a direct connection to the relay. "+
+				"Unset %s (and any of HTTPS_PROXY/HTTP_PROXY/ALL_PROXY/SOCKS_PROXY) "+
+				"in the shell that launches hoot, or run hoot outside torsocks",
+			name, proxy.Scheme, proxy.Host, name,
+		)
+	}
+
 	const dialTimeout = 10 * time.Second
 
 	// Dial
