@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"hoot/nip46"
 	"github.com/mattn/go-runewidth"
 )
 
@@ -26,7 +27,7 @@ func TestQRVisualFitsTerminalWidth(t *testing.T) {
 		func(string) error { return nil },
 		func() ([]FeedPost, error) { return nil, nil },
 		func() (string, error) { return fakeURI, nil },
-		func() (string, error) { return "", nil },
+		func() (string, *nip46.ProfileMetadata, error) { return "", nil, nil },
 		func() ([]string, error) { return nil, nil },
 		func([]string) error { return nil },
 	)

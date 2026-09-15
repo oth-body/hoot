@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"hoot/nip46"
 )
 
 // TestQRViewLayout dumps the full View() at every reasonable size and
@@ -32,7 +33,7 @@ func TestQRViewLayout(t *testing.T) {
 			func(string) error { return nil },
 			func() ([]FeedPost, error) { return nil, nil },
 			func() (string, error) { return fakeURI, nil },
-			func() (string, error) { return "", nil },
+					func() (string, *nip46.ProfileMetadata, error) { return "", nil, nil },
 			func() ([]string, error) { return nil, nil },
 			func([]string) error { return nil },
 		)

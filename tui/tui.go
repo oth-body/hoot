@@ -11,6 +11,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 	"github.com/muesli/reflow/ansi"
 
+	"hoot/nip46"
 	"github.com/mdp/qrterminal/v3"
 )
 
@@ -90,12 +91,14 @@ type Model struct {
 	tempName string // profile name during creation
 
 	// Profile state
-	profiles           []ProfileInfo
-	selectedProfile    int    // index in profile list
-	currentProfileID   string // ID of logged-in profile
-	currentProfileName string
-	lastUsedProfileID  string
-	addingProfile      bool // true when creating new profile
+	profiles            []ProfileInfo
+	selectedProfile     int    // index in profile list
+	currentProfileID    string // ID of logged-in profile
+	currentProfileName  string // display name (from kind-0 metadata if Amber login, otherwise user-set name)
+	currentProfileAbout string // "about" line from kind-0 metadata (Amber login only)
+	currentProfileNIP05 string // NIP-05 identifier from kind-0 metadata (Amber login only)
+	lastUsedProfileID   string
+	addingProfile       bool // true when creating new profile
 
 	// Feed state
 	feedPosts   []FeedPost
@@ -132,7 +135,7 @@ type Model struct {
 	onLoadDMs     func(privateKey string) ([]FeedPost, error)
 	onLoadReplies func(eventID string) ([]FeedPost, error)
 	onInitQR      func() (string, error)
-	onCheckQR     func() (string, error)
+	onCheckQR     func() (string, *nip46.ProfileMetadata, error)
 	onLoadRelays  func() ([]string, error)
 	onSaveRelays  func(relays []string) error
 	hasKey        func() bool
@@ -173,7 +176,7 @@ func (m *Model) SetCallbacks(
 	onPost func(message string) error,
 	onLoadFeed func() ([]FeedPost, error),
 	onInitQR func() (string, error),
-	onCheckQR func() (string, error),
+	onCheckQR func() (string, *nip46.ProfileMetadata, error),
 	onLoadRelays func() ([]string, error),
 	onSaveRelays func(relays []string) error,
 ) {
@@ -313,10 +316,26 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 
 	case qrSuccessMsg:
-		m.publicKey = string(msg)
+		m.publicKey = msg.pubkey
 		m.loggedIn = true
 		m.screen = ScreenHome
-		m.message = "Logged in via Amber!"
+		// Surface the kind-0 profile on the home screen. The
+		// signer-published name wins over the raw pubkey prefix
+		// because users recognise themselves by name, not by
+		// 16 hex chars. If the kind-0 fetch failed (msg.profile
+		// is nil — many users haven't set a profile), fall back
+		// to a friendly "Logged in" message and let viewHome
+		// render the npub.
+		if msg.profile != nil && msg.profile.Name != "" {
+			m.currentProfileName = msg.profile.Name
+			m.message = fmt.Sprintf("Logged in as %s", msg.profile.Name)
+		} else {
+			m.message = "Logged in via Amber!"
+		}
+		if msg.profile != nil {
+			m.currentProfileAbout = msg.profile.About
+			m.currentProfileNIP05 = msg.profile.NIP05
+		}
 		m.messageStyle = successStyle
 		return m, nil
 
@@ -559,7 +578,10 @@ func (m Model) handleLoginEnter() (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-type qrSuccessMsg string
+type qrSuccessMsg struct {
+	pubkey  string
+	profile *nip46.ProfileMetadata // may be nil if kind-0 fetch failed
+}
 
 func (m Model) initQR() tea.Msg {
 	if m.onInitQR != nil {
@@ -626,9 +648,9 @@ type qrGeneratedMsg struct {
 
 func (m Model) checkQRConnection() tea.Msg {
 	if m.onCheckQR != nil {
-		pubkey, err := m.onCheckQR()
+		pubkey, profile, err := m.onCheckQR()
 		if err == nil && pubkey != "" {
-			return qrSuccessMsg(pubkey)
+			return qrSuccessMsg{pubkey: pubkey, profile: profile}
 		}
 		// No connection yet — return a retry message so the TUI
 		// re-fires this check after a short delay instead of giving
@@ -1334,7 +1356,7 @@ type Config struct {
 	OnLoadDMs     func(privateKey string) ([]FeedPost, error)
 	OnLoadReplies func(eventID string) ([]FeedPost, error)
 	OnInitQR      func() (string, error)
-	OnCheckQR     func() (string, error)
+	OnCheckQR     func() (string, *nip46.ProfileMetadata, error)
 	OnLoadRelays  func() ([]string, error)
 	OnSaveRelays  func(relays []string) error
 	// Profile callbacks
