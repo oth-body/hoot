@@ -76,7 +76,7 @@ func TestVersion(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to run -version: %v, output: %s", err, output)
 	}
-	if !strings.Contains(output, "hoot version") {
+	if !strings.Contains(output, "hoot ") {
 		t.Errorf("Expected version output, got: %s", output)
 	}
 }

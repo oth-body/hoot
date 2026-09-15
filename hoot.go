@@ -33,7 +33,15 @@ const (
 	appName          = "hoot"
 	keyFileName      = "nostr_key.enc"
 	profilesFileName = "profiles.json"
-	version          = "0.0.4" // Define the version here
+)
+
+// version, commit, and date are set at build time by goreleaser via
+// ldflags: -X main.version=... -X main.commit=... -X main.date=...
+// When built with plain `go build`, they keep their defaults.
+var (
+	version = "dev"
+	commit  = "none"
+	date    = "unknown"
 )
 
 // defaultRelays is the set of relays hoot publishes to when the user
@@ -1349,7 +1357,7 @@ func main() {
 
 	// Handle version flag
 	if *versionPtr {
-		fmt.Printf("hoot version %s\n", version)
+		fmt.Printf("hoot %s (commit %s, built %s)\n", version, commit, date)
 		return
 	}
 
