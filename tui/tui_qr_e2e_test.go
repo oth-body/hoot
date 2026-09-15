@@ -7,6 +7,7 @@ import (
 
 	"github.com/charmbracelet/bubbles/spinner"
 	tea "github.com/charmbracelet/bubbletea"
+	"hoot/nip46"
 )
 
 // TestQRFlowsThroughLoginMenuEndToEnd drives the full path a real user
@@ -30,7 +31,7 @@ func TestQRFlowsThroughLoginMenuEndToEnd(t *testing.T) {
 			// we just resolve immediately — the test is about flow not latency.
 			return fakeURI, nil
 		},
-		func() (string, error) { return "", nil },
+		func() (string, *nip46.ProfileMetadata, error) { return "", nil, nil },
 		func() ([]string, error) { return nil, nil },
 		func([]string) error { return nil },
 	)
@@ -103,7 +104,7 @@ func TestQRFlowsThroughLoginMenuEndToEnd(t *testing.T) {
 			func(string) error { return nil },
 			func() ([]FeedPost, error) { return nil, nil },
 			func() (string, error) { return fakeURI, nil },
-			func() (string, error) { return "", nil },
+			func() (string, *nip46.ProfileMetadata, error) { return "", nil, nil },
 			func() ([]string, error) { return nil, nil },
 			func([]string) error { return nil },
 		)

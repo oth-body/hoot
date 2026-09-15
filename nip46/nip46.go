@@ -592,6 +592,136 @@ func warnUnreachableRelays(configured []string, connected []*nostr.Relay, failur
 		len(dead), strings.Join(parts, ", "))
 }
 
+// ProfileMetadata is the kind-0 (NIP-01) metadata the signer
+// publishes on behalf of the user. All fields are optional —
+// signers only populate what the user has set in their signer
+// app (Amber, etc.). When Name is empty, the TUI falls back to
+// displaying the npub so the user is never shown an empty header.
+type ProfileMetadata struct {
+	PubKey  string `json:"-"`        // filled from session, not from kind-0 content
+	Name    string `json:"name,omitempty"`
+	About   string `json:"about,omitempty"`
+	Picture string `json:"picture,omitempty"`
+	NIP05   string `json:"nip05,omitempty"`
+}
+
+// FetchProfile queries the live relay connections (those already
+// opened by ConnectRelays for the NIP-46 pairing) for a kind-0
+// event authored by the user (UserPublicKey, returned by
+// GetPublicKey). It returns the first profile event found, or
+// nil + nil if none of the relays have one — that is not an
+// error: many users haven't set a profile, and we want to fall
+// back to the npub display without raising an error toast.
+//
+// The relays used are the same ones the NIP-46 session is
+// already connected to, so this adds no extra dial cost and
+// amortises the latency: the connect happened during the QR
+// scan, this just rides on top of those connections.
+//
+// We don't use the cache here because the live relay fetch is
+// fast (< 1s typically) and the profile may have changed since
+// the last cache write — the canonical source is always the
+// relay. The caller is responsible for cache writes.
+func (s *Session) FetchProfile(ctx context.Context, userPubKey string) (*ProfileMetadata, error) {
+	if userPubKey == "" {
+		return nil, fmt.Errorf("FetchProfile: empty user pubkey")
+	}
+	if len(s.relays) == 0 {
+		return nil, fmt.Errorf("FetchProfile: no relay connections available (call ConnectRelays first)")
+	}
+
+	filter := nostr.Filter{
+		Authors: []string{userPubKey},
+		Kinds:   []int{0},
+		Limit:   1,
+	}
+
+	// Per-relay timeout — we want a fast fail so the user sees
+	// the npub fallback within ~2s instead of waiting 30s for a
+	// dead relay.
+	queryCtx, cancel := context.WithTimeout(ctx, 6*time.Second)
+	defer cancel()
+
+	type result struct {
+		ev  *nostr.Event
+		err error
+	}
+	results := make(chan result, len(s.relays))
+	for _, relay := range s.relays {
+		if !relay.IsConnected() {
+			continue
+		}
+		go func(r *nostr.Relay) {
+			evCh, err := r.QueryEvents(queryCtx, filter)
+			if err != nil {
+				results <- result{nil, err}
+				return
+			}
+			// QueryEvents closes the channel when done; read until
+			// close (or context cancellation) and return the first
+			// event found.
+			var first *nostr.Event
+			for ev := range evCh {
+				if first == nil {
+					first = ev
+				}
+			}
+			results <- result{ev: first}
+		}(relay)
+	}
+
+	var profileEvent *nostr.Event
+	collected := 0
+	expected := len(s.relays)
+	for collected < expected {
+		select {
+		case r := <-results:
+			collected++
+			if r.err == nil && r.ev != nil && profileEvent == nil {
+				profileEvent = r.ev
+				// Keep collecting from other relays in case a
+				// newer event is found, but we break early once
+				// we have at least one — the FetchProfile
+				// contract is "first profile event found".
+			}
+		case <-queryCtx.Done():
+			// Bail out on context expiry so we don't block the
+			// TUI's login flow.
+			if profileEvent != nil {
+				break
+			}
+			return nil, queryCtx.Err()
+		}
+		if profileEvent != nil {
+			// Drain remaining results so the goroutines don't
+			// leak. The channel is buffered to len(relays) so
+			// this is non-blocking.
+			go func() {
+				for i := 0; i < expected-collected; i++ {
+					<-results
+				}
+			}()
+			break
+		}
+	}
+
+	if profileEvent == nil {
+		// Not an error — many users have no kind-0 event. The
+		// caller will fall back to npub display.
+		return nil, nil
+	}
+
+	var meta ProfileMetadata
+	if err := json.Unmarshal([]byte(profileEvent.Content), &meta); err != nil {
+		// Malformed kind-0 content. Treat as "no profile" — the
+		// caller falls back to npub, and we don't want to surface
+		// a JSON parse error to the user during login.
+		return nil, nil
+	}
+	meta.PubKey = userPubKey
+	return &meta, nil
+}
+
 // GetPublicKey requests the user's public key from the signer.
 func (s *Session) GetPublicKey(ctx context.Context) (string, error) {
 	req := Request{

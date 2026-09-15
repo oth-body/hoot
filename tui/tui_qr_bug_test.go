@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"hoot/nip46"
 )
 
 // TestQRGeneratesAfterInitMessage verifies that the QR code renders correctly
@@ -29,7 +30,7 @@ func TestQRGeneratesAfterInitMessage(t *testing.T) {
 		func(string) error { return nil },                                    // onPost
 		func() ([]FeedPost, error) { return nil, nil },                       // onLoadFeed
 		func() (string, error) { return fakeURI, nil },                       // onInitQR
-		func() (string, error) { return "", nil },                            // onCheckQR
+		func() (string, *nip46.ProfileMetadata, error) { return "", nil, nil }, // onCheckQR
 		func() ([]string, error) { return nil, nil },                         // onLoadRelays
 		func([]string) error { return nil },                                  // onSaveRelays
 	)
@@ -82,7 +83,7 @@ func TestQRGeneratesWhenSizeMessageArrivesAfterQRData(t *testing.T) {
 		func(string) error { return nil },
 		func() ([]FeedPost, error) { return nil, nil },
 		func() (string, error) { return fakeURI, nil },
-		func() (string, error) { return "", nil },
+		func() (string, *nip46.ProfileMetadata, error) { return "", nil, nil },
 		func() ([]string, error) { return nil, nil },
 		func([]string) error { return nil },
 	)

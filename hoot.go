@@ -1465,16 +1465,16 @@ func main() {
 				nip46Session = session
 				return uri, nil
 			},
-			OnCheckQR: func() (string, error) {
+			OnCheckQR: func() (string, *nip46.ProfileMetadata, error) {
 				if nip46Session == nil {
-					return "", fmt.Errorf("session not initialized")
+					return "", nil, fmt.Errorf("session not initialized")
 				}
 				// Short poll — the subscriptions are already active
 				// from ConnectRelays called in OnInitQR. We just
 				// check if the signer's connect event arrived yet.
 				pubKey, err := nip46Session.CheckConnection(3 * time.Second)
 				if err != nil {
-					return "", err // TUI will retry
+					return "", nil, err // TUI will retry
 				}
 
 				// Got connect — now request the user's public key.
@@ -1482,9 +1482,34 @@ func main() {
 				defer cancel()
 				userPubKey, err := nip46Session.GetPublicKey(ctx)
 				if err != nil {
-					return pubKey, nil // fall back to signer pubkey
+					return pubKey, nil, nil // fall back to signer pubkey
 				}
-				return userPubKey, nil
+
+				// Fetch the user's kind-0 profile metadata so the
+				// home screen can render their name + about + nip-05
+				// instead of just a 16-char pubkey prefix. Failure
+				// here is non-fatal: many users have no profile, and
+				// the caller falls back to the npub display.
+				profileCtx, profileCancel := context.WithTimeout(context.Background(), 6*time.Second)
+				defer profileCancel()
+				profile, _ := nip46Session.FetchProfile(profileCtx, userPubKey)
+				if profile != nil && eventCache != nil {
+					// Cache the freshly-fetched profile so subsequent
+					// logins can render the name immediately without
+					// hitting the relays again. 24h TTL matches the
+					// profile event re-publish cadence most signers
+					// use (kind 0 is replaceable).
+					_ = eventCache.StoreProfile(
+						profile.PubKey,
+						profile.Name,
+						profile.About,
+						profile.Picture,
+						profile.NIP05,
+						time.Now().Unix(),
+						24*time.Hour,
+					)
+				}
+				return userPubKey, profile, nil
 			},
 			// Profile callbacks
 			OnListProfiles: func() ([]tui.ProfileInfo, string, error) {
