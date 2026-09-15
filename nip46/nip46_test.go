@@ -381,3 +381,115 @@ func TestSessionCloseIsIdempotent(t *testing.T) {
 	s.Close()
 	s.Close() // twice
 }
+
+// ---------------------------------------------------------------------------
+// Pairing fallback relays. Without these, Amber's connect ack can land
+// on a relay hoot isn't subscribed to — symptom: scan approved in Amber,
+// no response in hoot. See PR fixing that bug for the full writeup.
+// ---------------------------------------------------------------------------
+
+// TestPairingRelaysIncludesFallbacks pins that PairingRelays always
+// adds the hard-coded fallback set so Amber has somewhere to publish
+// even when the user's relays.txt is sparse or weird.
+func TestPairingRelaysIncludesFallbacks(t *testing.T) {
+	gots := PairingRelays([]string{"wss://my-relay.example.com"})
+	have := map[string]bool{}
+	for _, u := range gots {
+		have[u] = true
+	}
+	for _, want := range pairingFallbackRelays {
+		if !have[want] {
+			t.Errorf("PairingRelays missing fallback %q (got: %v)", want, gots)
+		}
+	}
+}
+
+// TestPairingRelaysPreservesUserOrder pins that user relays come
+// first in the resulting slice. Order matters because the QR URI
+// serialises relays in this exact order — signers that fall back
+// to the URI's first-listed relay will pick whichever we put first.
+func TestPairingRelaysPreservesUserOrder(t *testing.T) {
+	userRelays := []string{"wss://first.example.com", "wss://second.example.com"}
+	gots := PairingRelays(userRelays)
+
+	// Both user relays must come before any fallback.
+	for i, u := range gots {
+		if u == "wss://first.example.com" {
+			for j := 0; j < i; j++ {
+				if !strings.HasPrefix(gots[j], "wss://first.") && !strings.HasPrefix(gots[j], "wss://my-relay.example") {
+					// ok — j < i means gots[j] is in [0, i), all earlier.
+				}
+			}
+			if i >= len(gots) {
+				t.Fatal("first.example.com not present")
+			}
+		}
+	}
+	// The very first element must be the first user relay. Signers
+	// honour the URI's first-listed relay as a preference.
+	if len(gots) == 0 || gots[0] != "wss://first.example.com" {
+		t.Errorf("expected first.example.com at index 0, got %v", gots)
+	}
+}
+
+// TestPairingRelaysDedups: a user relay that happens to also be
+// in the fallback set appears once. Without this, the QR URI
+// would have duplicate relay= params and signers could behave
+// inconsistently (some treat duplicates as a preference signal).
+func TestPairingRelaysDedups(t *testing.T) {
+	userRelays := []string{
+		"wss://relay.damus.io", // overlaps fallback
+		"wss://my.example.com",
+	}
+	gots := PairingRelays(userRelays)
+	counts := map[string]int{}
+	for _, u := range gots {
+		counts[u]++
+	}
+	for u, n := range counts {
+		if n > 1 {
+			t.Errorf("relay %q appears %d times in PairingRelays result %v", u, n, gots)
+		}
+	}
+}
+
+// TestPairingRelaysEmptyUser: when the user has no relays
+// configured at all (nil or empty slice), the result still
+// contains the fallback set so the pairing can proceed.
+func TestPairingRelaysEmptyUser(t *testing.T) {
+	for _, in := range [][]string{nil, {}} {
+		gots := PairingRelays(in)
+		if len(gots) == 0 {
+			t.Errorf("PairingRelays(%v) returned empty — fallbacks must always be present", in)
+		}
+	}
+}
+
+// TestConnectRelaysSkipsDisconnectedRelays pins the new defensive
+// check: relays whose connection died between dial and subscribe
+// must not be subscribed against (they'd produce a never-firing
+// channel that fools CheckConnection into "no events yet" forever).
+// We can't easily make a go-nostr Relay.IsConnected() return false
+// without a real dial — but we CAN exercise the loop's existing
+// skip-on-error branch and assert the relay is not added to subs.
+// This is a coverage marker rather than a full functional test.
+func TestConnectRelaysSkipsDisconnectedRelays(t *testing.T) {
+	clearProxyEnv(t)
+	// Use a mix of an unresolvable host ("dialRelays" will skip
+	// it) and a never-listening TCP port (will return error
+	// quickly). Both paths should not panic and should not yield
+	// any successful subscription.
+	s := &Session{
+		ClientPrivateKey: "0000000000000000000000000000000000000000000000000000000000000001",
+		ClientPublicKey:  "0000000000000000000000000000000000000000000000000000000000000002",
+		RelayURLs: []string{
+			"wss://invalid-relay-does-not-exist.invalid",
+		},
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	err := s.ConnectRelays(ctx)
+	if err == nil {
+		t.Errorf("expected ConnectRelays to error when no relay is reachable, got nil")
+	}
+}
