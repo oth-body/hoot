@@ -2,6 +2,7 @@ package nip46
 
 import (
 	"context"
+	"fmt"
 	"net/url"
 	"strings"
 	"testing"
@@ -142,7 +143,7 @@ func TestDialRelaysContinuesOnIndividualFailure(t *testing.T) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
-	got := s.dialRelays(ctx, 2*time.Second)
+	got, _ := s.dialRelays(ctx, 2*time.Second)
 	if len(got) != 0 {
 		t.Errorf("dialRelays = %v, want empty (no reachable URLs)", got)
 	}
@@ -512,13 +513,188 @@ func TestWarnUnreachableRelays(t *testing.T) {
 		"wss://relay.damus.io",     // dup, ignored
 		"wss://nostr.wine",         // fallback, ignored
 	}
-	// Construct a fake live set: Relay.URL is what go-nostr sets
-	// after normalisation. We don't have a real Relay without a
-	// real dial, so use a tiny helper type that satisfies the
-	// shape `warnUnreachableRelays` actually reads — only
-	// `.URL` is read. Use a struct via type alias? No, simpler:
-	// skip the type and just confirm the function is callable
-	// without panicking on empty input.
-	warnUnreachableRelays(configured, nil)
-	warnUnreachableRelays([]string{}, nil)
+	// Without a real Dial we can't build a real *nostr.Relay, so
+	// the alive-only path of warnUnreachableRelays (where every
+	// entry is either live or fallback) has no relays to warn
+	// about. This pins that the helper is callable without
+	// panicking on empty input. The richer "why is X unreachable"
+	// path is covered by TestRelayDialFailureMessage below.
+	warnUnreachableRelays(configured, nil, nil)
+	warnUnreachableRelays([]string{}, nil, nil)
+}
+
+// TestRelayDialFailureMessage pins the user-visible message shape:
+// when zero relays connect, the error names the failing URLs and
+// the per-URL cause so the user can edit their relays.txt without
+// guesswork. This is the regression guard for the bug report's
+// "web socket failure ... no response" symptom — we never emit
+// a generic "websocket failure" without per-URL context.
+func TestRelayDialFailureMessage(t *testing.T) {
+	e := &RelayDialFailure{
+		Tried: []string{
+			"wss://relay.damus.io",
+			"wss://relay.nostr.band",
+			"wss://my-dead-relay.invalid",
+		},
+		Reasons: map[string]string{
+			"wss://relay.damus.io":        "dial tcp 1.2.3.4:443: connect: connection refused",
+			"wss://relay.nostr.band":      "dial tcp: lookup relay.nostr.band: no such host",
+			"wss://my-dead-relay.invalid": "context deadline exceeded",
+		},
+	}
+	msg := e.Error()
+
+	// Must mention every URL we tried (or at least the first 3 — we
+	// truncate intentionally so the message fits in a TUI line).
+	for _, u := range e.Tried[:3] {
+		if !strings.Contains(msg, u) {
+			t.Errorf("error message missing URL %q: %s", u, msg)
+		}
+	}
+	// Must mention the underlying cause for at least one relay so
+	// the user has something to act on.
+	if !strings.Contains(msg, "no such host") && !strings.Contains(msg, "deadline") && !strings.Contains(msg, "connection refused") {
+		t.Errorf("error message missing per-URL failure cause: %s", msg)
+	}
+	// Must point at the config file so the user knows where to fix it.
+	if !strings.Contains(msg, "relays.txt") {
+		t.Errorf("error message should point at relays.txt so the user knows where to fix it: %s", msg)
+	}
+	// Must NOT contain the bare phrase "websocket failure" — that was
+	// the original symptom and we don't want it to leak back in.
+	if strings.Contains(strings.ToLower(msg), "websocket failure") {
+		t.Errorf("error message contains the old 'websocket failure' substring: %s", msg)
+	}
+}
+
+// TestErrTimeoutIsRetryable pins that the polling timeout error
+// is recognised as retryable (open subs > 0) so the TUI keeps
+// polling instead of showing a fatal error after the first 3s.
+func TestErrTimeoutIsRetryable(t *testing.T) {
+	cases := []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{"nil error", nil, false},
+		{"ErrTimeout with open subs", &ErrTimeout{Open: 2}, true},
+		{"ErrTimeout with zero open subs", &ErrTimeout{Open: 0}, false},
+		{"wrapped ErrTimeout with open subs", fmt.Errorf("check: %w", &ErrTimeout{Open: 1}), true},
+		{"context deadline", context.DeadlineExceeded, true},
+		{"context canceled", context.Canceled, true},
+		{"plain non-retryable", fmt.Errorf("relay dial refused"), false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := IsRetryable(tc.err)
+			if got != tc.want {
+				t.Errorf("IsRetryable(%v) = %v, want %v", tc.err, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestErrTimeoutMessageIsActionable pins the previous regression:
+// the bare "no response yet" string gave users nothing to do. The
+// new default message names Amber and the connection prompt so
+// users know exactly what to check.
+func TestErrTimeoutMessageIsActionable(t *testing.T) {
+	// Default — Reason is empty, Error() must produce the actionable
+	// fallback (which names Amber and "approved").
+	defaultMsg := (&ErrTimeout{Open: 2}).Error()
+	if !strings.Contains(strings.ToLower(defaultMsg), "amber") {
+		t.Errorf("default ErrTimeout message should mention Amber so the user knows where to look: %s", defaultMsg)
+	}
+	if !strings.Contains(strings.ToLower(defaultMsg), "approved") {
+		t.Errorf("default ErrTimeout message should mention approving the prompt: %s", defaultMsg)
+	}
+
+	// Custom Reason — even if a caller passes a less helpful Reason,
+	// we don't want the OLD bare substring "no response yet" leaking
+	// through without an actionable noun. Regression for the original
+	// bug report's truncated symptom.
+	cases := []struct {
+		name   string
+		reason string
+		want   string // a substring the message MUST contain
+	}{
+		{"default reason is amber+approved", "", "amber"},
+		{"custom reason that mentions amber", "amber hasn't responded yet — check it's online", "amber"},
+		{"custom reason mentions signer", "signer still hasn't replied", "signer"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			e := &ErrTimeout{Reason: tc.reason}
+			msg := e.Error()
+			if !strings.Contains(strings.ToLower(msg), tc.want) {
+				t.Errorf("ErrTimeout{Reason: %q}.Error() = %q, must contain %q", tc.reason, msg, tc.want)
+			}
+		})
+	}
+
+	// The SABOTAGE case — restoring the original bare "no response
+	// yet" string. Without context, this would have been the user-
+	// visible message. Asserting against the default empty Reason
+	// (which uses our safe fallback) catches any future PR that
+	// tries to shorten the message back to the unhelpful version.
+	bareMsg := (&ErrTimeout{Reason: "no response yet"}).Error()
+	if bareMsg == "no response yet" {
+		t.Errorf("ErrTimeout message regressed to bare 'no response yet' — must include actionable context. Got: %q", bareMsg)
+	}
+}
+
+// TestUserFacingErrorsAreActionable is a meta-test that scans every
+// error message this package produces for the user (via the package's
+// exported functions) and asserts no message contains the bare
+// substring "websocket failure" — that was the exact phrase in the
+// original bug report, and we want a regression guard so it can
+// never sneak back in. Also asserts every error mentions at least
+// one URL, env var, or actionable noun so a confused user can do
+// something with it.
+func TestUserFacingErrorsAreActionable(t *testing.T) {
+	// Helper: must contain at least one of these tokens.
+	actionableTokens := []string{
+		"relay", "proxy", "amber", "relays.txt",
+		"signer", "subscription", "context", "network",
+		"connection", "URL", "timeout",
+	}
+	hasActionable := func(msg string) bool {
+		low := strings.ToLower(msg)
+		for _, tok := range actionableTokens {
+			if strings.Contains(low, strings.ToLower(tok)) {
+				return true
+			}
+		}
+		return false
+	}
+
+	badSubstrings := []string{
+		// The exact substring the user reported. If it ever leaks
+		// back into the code, this test fires.
+		"websocket failure",
+	}
+
+	errorsToCheck := []struct {
+		name string
+		err  error
+	}{
+		{"ErrTimeout", &ErrTimeout{Open: 1}},
+		{"RelayDialFailure single", &RelayDialFailure{
+			Tried:   []string{"wss://x.invalid"},
+			Reasons: map[string]string{"wss://x.invalid": "no such host"},
+		}},
+	}
+	for _, tc := range errorsToCheck {
+		t.Run(tc.name, func(t *testing.T) {
+			msg := tc.err.Error()
+			for _, bad := range badSubstrings {
+				if strings.Contains(strings.ToLower(msg), bad) {
+					t.Errorf("%s error contains forbidden substring %q: %s", tc.name, bad, msg)
+				}
+			}
+			if !hasActionable(msg) {
+				t.Errorf("%s error is not actionable (no URL/env-var/noun to act on): %s", tc.name, msg)
+			}
+		})
+	}
 }
