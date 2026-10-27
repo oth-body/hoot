@@ -94,6 +94,7 @@ hoot
 The TUI provides:
 
 - **Login options**: Enter nsec directly, use saved profile, or scan QR code (NIP-46)
+- **Configure relays before logging in**: The login menu has a "Configure relays" option so you can add/remove relays before signing in — useful since QR (NIP-46) pairing uses these relays
 - **Multi-profile support**: Save and switch between multiple Nostr accounts
 - **Post composer**: Write and publish notes
 - **Feed viewer**: Browse recent posts from the network

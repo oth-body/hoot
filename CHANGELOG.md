@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+- Added a "Configure relays" option to the TUI login menu so relays can be reviewed, added, and removed before signing in — matters most for QR (NIP-46) pairing, which uses the configured relay set. Also wired up the relay screen's add/delete/navigate controls, which were present in the UI but not actually connected to any key handling.
+
 ## [0.3.0] - 2026-09-14
 
 Eight PRs since v0.2.0, all bug fixes around the NIP-46 QR login flow and a broader codebase review.

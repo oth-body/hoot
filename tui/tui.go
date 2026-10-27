@@ -230,8 +230,23 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.KeyMsg:
 		switch msg.String() {
 		case "ctrl+c", "esc":
+			if m.screen == ScreenRelays && m.addingRelay {
+				// Cancel just the "new relay" sub-form, not the whole screen.
+				m.addingRelay = false
+				m.textInput.Reset()
+				m.message = ""
+				return m, nil
+			}
 			if m.screen == ScreenLogin {
 				return m, tea.Quit
+			}
+			if m.screen == ScreenRelays && !m.loggedIn {
+				// Relays were opened from the login menu (no session yet),
+				// so there is no Home screen to return to.
+				m.screen = ScreenLogin
+				m.cursor = 0
+				m.message = ""
+				return m, nil
 			}
 			// Go back to home from other screens
 			m.screen = ScreenHome
@@ -259,6 +274,37 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 			}
 
+		case "a":
+			if m.screen == ScreenRelays && !m.addingRelay {
+				m.addingRelay = true
+				m.textInput.Placeholder = "wss://relay.example.com"
+				m.textInput.EchoMode = textinput.EchoNormal
+				m.textInput.Reset()
+				m.textInput.Focus()
+				m.message = ""
+				return m, nil
+			}
+
+		case "d":
+			if m.screen == ScreenRelays && !m.addingRelay && len(m.relays) > 0 {
+				idx := m.selectedRelay
+				removed := m.relays[idx]
+				m.relays = append(m.relays[:idx], m.relays[idx+1:]...)
+				if m.selectedRelay >= len(m.relays) && m.selectedRelay > 0 {
+					m.selectedRelay--
+				}
+				if m.onSaveRelays != nil {
+					if err := m.onSaveRelays(m.relays); err != nil {
+						m.message = fmt.Sprintf("Failed to save relays: %v", err)
+						m.messageStyle = errorStyle
+						return m, nil
+					}
+				}
+				m.message = fmt.Sprintf("Removed %s", removed)
+				m.messageStyle = successStyle
+				return m, nil
+			}
+
 		case "enter":
 			return m.handleEnter()
 
@@ -275,6 +321,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			case ScreenReplies:
 				if m.replyScroll > 0 {
 					m.replyScroll--
+				}
+			case ScreenRelays:
+				if !m.addingRelay && m.selectedRelay > 0 {
+					m.selectedRelay--
 				}
 			default:
 				if m.cursor > 0 {
@@ -296,15 +346,22 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				if m.replyScroll < len(m.replyPosts)-4 {
 					m.replyScroll++
 				}
+			case ScreenRelays:
+				if !m.addingRelay && m.selectedRelay < len(m.relays)-1 {
+					m.selectedRelay++
+				}
 			case ScreenLogin:
 				// Special handling for login menu
-				hasKey := m.hasKey != nil && m.hasKey()
-				limit := 0
-				if !hasKey {
-					limit = 1 // 0=Nsec, 1=QR
-				}
-				if m.cursor < limit {
-					m.cursor++
+				hasProfiles := len(m.profiles) > 0
+				inTextEntry := m.addingProfile || m.cursor == 200
+				if !inTextEntry {
+					limit := 2 // Create/Login option, Scan QR, Configure Relays
+					if hasProfiles {
+						limit = len(m.profiles) + 2 // profiles..., + Add profile, Scan QR, Configure Relays
+					}
+					if m.cursor < limit {
+						m.cursor++
+					}
 				}
 			case ScreenHome:
 				if m.cursor < 7 {
@@ -444,6 +501,8 @@ func (m Model) handleEnter() (tea.Model, tea.Cmd) {
 		return m.handlePostEnter()
 	case ScreenReplies:
 		return m.handleRepliesEnter()
+	case ScreenRelays:
+		return m.handleRelaysEnter()
 	}
 	return m, nil
 }
@@ -483,6 +542,7 @@ func (m Model) handleLoginEnter() (tea.Model, tea.Cmd) {
 		default: // Profile list selection
 			addIdx := len(m.profiles)
 			qrIdx := len(m.profiles) + 1
+			relaysIdx := len(m.profiles) + 2
 
 			if m.cursor < len(m.profiles) {
 				// Selected a profile - go to password entry
@@ -506,6 +566,8 @@ func (m Model) handleLoginEnter() (tea.Model, tea.Cmd) {
 				m.qrReady = false
 				m.message = "Generating QR code..."
 				return m, m.initQR
+			} else if m.cursor == relaysIdx {
+				m.openRelaysFromLogin()
 			}
 		}
 	} else {
@@ -584,10 +646,30 @@ func (m Model) handleLoginEnter() (tea.Model, tea.Cmd) {
 			m.qrReady = false
 			m.message = "Generating QR code..."
 			return m, m.initQR
+
+		case 2:
+			// Configure Relays selected
+			m.openRelaysFromLogin()
 		}
 	}
 
 	return m, nil
+}
+
+// openRelaysFromLogin switches to the relay settings screen from the login
+// menu, before any session exists. It's factored out because both the
+// no-profiles and has-profiles login menus offer a "Configure Relays" entry.
+func (m *Model) openRelaysFromLogin() {
+	m.screen = ScreenRelays
+	m.addingRelay = false
+	m.selectedRelay = 0
+	m.message = ""
+	if m.onLoadRelays != nil {
+		relays, err := m.onLoadRelays()
+		if err == nil {
+			m.relays = relays
+		}
+	}
 }
 
 type qrSuccessMsg struct {
@@ -790,19 +872,21 @@ func (m Model) handleRelaysEnter() (tea.Model, tea.Cmd) {
 			}
 			m.relays = append(m.relays, newRelay)
 			if m.onSaveRelays != nil {
-				m.onSaveRelays(m.relays)
+				if err := m.onSaveRelays(m.relays); err != nil {
+					m.message = fmt.Sprintf("Failed to save relay: %v", err)
+					m.messageStyle = errorStyle
+					m.addingRelay = false
+					m.textInput.Reset()
+					return m, nil
+				}
 			}
 			m.message = "Relay added"
 			m.messageStyle = successStyle
 		}
 		m.addingRelay = false
 		m.textInput.Reset()
-	} else {
-		// Toggle add mode?
-		// Or maybe Enter on "Add Relay" button?
-		// Simplify: 'a' to add, 'd' to delete.
-		// Enter does nothing unless we have a menu.
 	}
+	// Enter does nothing while browsing the list — 'a' adds, 'd' deletes.
 	return m, nil
 }
 
@@ -973,6 +1057,15 @@ func (m Model) viewLogin() string {
 				b.WriteString(menuStyle.Render("  📱 Scan QR with Amber"))
 			}
 			b.WriteString("\n")
+
+			// Configure Relays option
+			relaysIdx := len(m.profiles) + 2
+			if m.cursor == relaysIdx {
+				b.WriteString(selectedStyle.Render("→ 🔗 Configure relays"))
+			} else {
+				b.WriteString(menuStyle.Render("  🔗 Configure relays"))
+			}
+			b.WriteString("\n")
 		}
 	} else {
 		// No profiles or adding new profile
@@ -1003,6 +1096,7 @@ func (m Model) viewLogin() string {
 				options := []string{
 					"Create new profile",
 					"Scan QR with Amber (NIP-46)",
+					"🔗 Configure relays",
 				}
 
 				for i, opt := range options {
@@ -1348,6 +1442,11 @@ func (m Model) viewRelays() string {
 	b.WriteString(titleStyle.Render("🔗 Relay Settings"))
 	b.WriteString("\n\n")
 
+	if !m.loggedIn {
+		b.WriteString(menuStyle.Render("Choose which relays hoot uses to publish, read, and pair via QR."))
+		b.WriteString("\n\n")
+	}
+
 	if m.addingRelay {
 		b.WriteString(menuStyle.Render("Enter new relay URL:"))
 		b.WriteString("\n")
@@ -1367,7 +1466,11 @@ func (m Model) viewRelays() string {
 			}
 		}
 		b.WriteString("\n")
-		b.WriteString(menuStyle.Render("[a] Add Relay  [d] Delete Selected  [esc] Back"))
+		backLabel := "Back to Home"
+		if !m.loggedIn {
+			backLabel = "Back to Login"
+		}
+		b.WriteString(menuStyle.Render(fmt.Sprintf("[a] Add Relay  [d] Delete Selected  [esc] %s", backLabel)))
 	}
 
 	return b.String()
