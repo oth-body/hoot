@@ -12,6 +12,8 @@ import (
 	"sync"
 	"time"
 
+	hrelay "hoot/internal/relay"
+
 	"github.com/nbd-wtf/go-nostr"
 	"github.com/nbd-wtf/go-nostr/nip04"
 )
@@ -24,7 +26,7 @@ type Session struct {
 	RelayURLs        []string
 	UserPublicKey    string
 
-	relays []*nostr.Relay
+	relays []*hrelay.Relay
 	merged chan *nostr.Event // merged subscription events from all relays
 	cancel context.CancelFunc
 }
@@ -264,7 +266,7 @@ func (s *Session) ConnectRelays(ctx context.Context) error {
 	}
 
 	type relaySub struct {
-		relay  *nostr.Relay
+		relay  *hrelay.Relay
 		events chan *nostr.Event
 		close  func()
 	}
@@ -458,9 +460,9 @@ func (s *Session) CheckConnection(timeout time.Duration) (string, error) {
 	}
 }
 
-func (s *Session) dialRelays(ctx context.Context, perRelayTimeout time.Duration) (connected []*nostr.Relay, failures map[string]string) {
+func (s *Session) dialRelays(ctx context.Context, perRelayTimeout time.Duration) (connected []*hrelay.Relay, failures map[string]string) {
 	type result struct {
-		relay *nostr.Relay
+		relay *hrelay.Relay
 		err   error
 		url   string
 	}
@@ -472,7 +474,7 @@ func (s *Session) dialRelays(ctx context.Context, perRelayTimeout time.Duration)
 			defer wg.Done()
 			dialCtx, cancel := context.WithTimeout(ctx, perRelayTimeout)
 			defer cancel()
-			relay, err := nostr.RelayConnect(dialCtx, u)
+			relay, err := hrelay.Connect(dialCtx, u)
 			results <- result{relay: relay, err: err, url: u}
 		}(u)
 	}
@@ -554,7 +556,7 @@ func (e *RelayDialFailure) Error() string {
 // slash stripped), so we compare via the Relay.URL field. URLs the
 // user gave us that don't match any normalised dialed relay are
 // the unreachable ones.
-func warnUnreachableRelays(configured []string, connected []*nostr.Relay, failures map[string]string) {
+func warnUnreachableRelays(configured []string, connected []*hrelay.Relay, failures map[string]string) {
 	live := make(map[string]struct{}, len(connected))
 	for _, r := range connected {
 		live[r.URL] = struct{}{}
@@ -651,7 +653,7 @@ func (s *Session) FetchProfile(ctx context.Context, userPubKey string) (*Profile
 		if !relay.IsConnected() {
 			continue
 		}
-		go func(r *nostr.Relay) {
+		go func(r *hrelay.Relay) {
 			evCh, err := r.QueryEvents(queryCtx, filter)
 			if err != nil {
 				results <- result{nil, err}
@@ -889,7 +891,7 @@ func (s *Session) publishToAllRelays(ctx context.Context, event *nostr.Event) er
 	var wg sync.WaitGroup
 	for _, relay := range s.relays {
 		wg.Add(1)
-		go func(relay *nostr.Relay) {
+		go func(relay *hrelay.Relay) {
 			defer wg.Done()
 			errCh <- relay.Publish(ctx, *event)
 		}(relay)

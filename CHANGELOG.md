@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+- Relay connections now use hoot's own client (`internal/relay`) instead of go-nostr's `Relay`/`SimplePool`. go-nostr's `Relay.close` raced with its own connection goroutine on every disconnect (in a narrow window that could nil-dereference). go-nostr is still used for event types, signing and NIP-04/19 helpers.
+- Relays are queried and published to **in parallel**, so loading the feed, DMs and profiles no longer waits on each relay in turn.
+- The full test suite now runs under `-race` (the relay-backed tests used to skip).
 - TUI: the home menu's letter shortcuts work: **p**ost, **f**eed, **d**Ms, r**e**plies, **t**ip, **r**elays, **s**witch profile, **q**uit. Only `q` used to.
 - TUI: text fields get every letter. Keys used to be matched as shortcuts first: typing `j`/`k` moved the cursor mid-form (breaking profile creation if your name or password contained them), and typing `r` in a password field **deleted the key stored with `hoot -s`**. The hidden `r` = "delete key file" binding on the login screen is gone.
 - TUI: the home screen shows your full npub so you can copy it.
