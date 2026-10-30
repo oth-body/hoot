@@ -67,9 +67,22 @@ func (m Model) handlePosted(msg postedMsg) (Model, tea.Cmd) {
 		m.messageStyle = errorStyle
 		return m, nil
 	}
+	m.textInput.Reset()
+	if m.replyTo != nil {
+		m.leaveCompose()
+		m.message = "Reply posted!"
+		m.messageStyle = successStyle
+		if m.screen == ScreenReplies && m.threadPost != nil {
+			// Reload the thread so the new reply shows up.
+			msg := m.message
+			cmd := m.openThread(*m.threadPost, m.threadFrom)
+			m.message, m.messageStyle = msg, successStyle
+			return m, cmd
+		}
+		return m, nil
+	}
 	m.message = "Posted successfully!"
 	m.messageStyle = successStyle
-	m.textInput.Reset()
 	if m.screen == ScreenPost {
 		m.screen = ScreenHome
 		m.cursor = 0

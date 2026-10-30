@@ -208,6 +208,20 @@ func tuiConfig() tui.Config {
 			}
 			return res.String(), nil
 		},
+		OnReply: publishReply,
+		OnReact: publishReaction,
+		OnZap: func(pubkey, eventID string, sats int64) (string, error) {
+			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+			defer cancel()
+			res, err := zapUser(ctx, pubkey, eventID, sats, "")
+			if err != nil {
+				return "", err
+			}
+			if !res.Zapped {
+				return res.String() + " (their address doesn't support zaps, so it was sent as a plain tip)", nil
+			}
+			return res.String(), nil
+		},
 		OnLogout: func() {
 			endRemoteSession()
 			localPrivateKey = ""

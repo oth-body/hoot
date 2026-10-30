@@ -30,6 +30,13 @@ type Config struct {
 	OnDeleteProfile func(id string) error
 	// OnLogout clears the host's signing state (see Model.onLogout).
 	OnLogout func()
+	// OnReply publishes a reply to parentID.
+	OnReply func(parentID, content string) error
+	// OnReact likes eventID.
+	OnReact func(eventID string) error
+	// OnZap zaps a post's author (NIP-57, falling back to a plain tip) and
+	// returns a one-line summary.
+	OnZap func(pubkey, eventID string, sats int64) (string, error)
 	// OnTip pays a tip (see Model.onTip).
 	OnTip func(target string, sats int64) (string, error)
 }
@@ -56,6 +63,9 @@ func newModelFromConfig(cfg Config) Model {
 	m.onAddProfile = cfg.OnAddProfile
 	m.onDeleteProfile = cfg.OnDeleteProfile
 	m.onLogout = cfg.OnLogout
+	m.onReply = cfg.OnReply
+	m.onReact = cfg.OnReact
+	m.onZap = cfg.OnZap
 	m.onTip = cfg.OnTip
 
 	// Load profiles on startup

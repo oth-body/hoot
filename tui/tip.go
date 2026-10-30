@@ -11,7 +11,13 @@ import (
 func (m Model) viewTip() string {
 	var b strings.Builder
 
-	b.WriteString(titleStyle.Render("⚡ Tip Someone"))
+	if m.zapPost != nil {
+		b.WriteString(titleStyle.Render("⚡ Zap"))
+		b.WriteString("\n")
+		b.WriteString(menuStyle.Render(truncateRunes(oneLine(m.zapPost.Content, 200), 70)))
+	} else {
+		b.WriteString(titleStyle.Render("⚡ Tip Someone"))
+	}
 	b.WriteString("\n\n")
 	switch {
 	case m.tipping:
@@ -73,6 +79,15 @@ func (m Model) handleTipEnter() (tea.Model, tea.Cmd) {
 		m.message = "Amount must be a whole number of sats greater than 0"
 		m.messageStyle = errorStyle
 		return m, nil
+	}
+	if m.zapPost != nil && m.onZap != nil {
+		m.tipping = true
+		m.message = ""
+		zap, pk, id := m.onZap, m.zapPost.Author, m.zapPost.ID
+		return m, func() tea.Msg {
+			summary, err := zap(pk, id, sats)
+			return tipResultMsg{summary: summary, err: err}
+		}
 	}
 	if m.onTip == nil {
 		m.message = "Tipping is not available"

@@ -10,42 +10,145 @@ import (
 	"github.com/nbd-wtf/go-nostr"
 )
 
-// publishPostTUI publishes a note using either NIP-46 or local key
-func publishPostTUI(content string) error {
-	var event nostr.Event
-	var err error
-	event.Kind = 1
-	event.Content = content
-	event.CreatedAt = nostr.Now()
-	// #hashtags become "t" tags, like `hoot -m` (the TUI didn't tag them).
-	event.Tags = append(nostr.Tags{}, hashtagTags(content)...)
-
-	// If NIP-46 session is active, use it
+// signEvent signs ev as the current user: via the NIP-46 remote signer if
+// one is connected, otherwise with the local key. It sets ev.PubKey.
+func signEvent(ev *nostr.Event) error {
+	if ev.Tags == nil {
+		ev.Tags = nostr.Tags{}
+	}
 	if nip46Session != nil {
-		event.PubKey = nip46Session.UserPublicKey
+		ev.PubKey = nip46Session.UserPublicKey
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
-		if err := nip46Session.SignEvent(ctx, &event); err != nil {
+		if err := nip46Session.SignEvent(ctx, ev); err != nil {
 			return fmt.Errorf("remote signing failed: %w", err)
 		}
-	} else {
-		// Use local key
-		if localPrivateKey == "" {
-			return fmt.Errorf("no active session or local key")
+		return nil
+	}
+	if localPrivateKey == "" {
+		return fmt.Errorf("no active session or local key")
+	}
+	pk, err := nostr.GetPublicKey(localPrivateKey)
+	if err != nil {
+		return fmt.Errorf("failed to get public key: %w", err)
+	}
+	ev.PubKey = pk
+	if err := ev.Sign(localPrivateKey); err != nil {
+		return fmt.Errorf("failed to sign event: %w", err)
+	}
+	return nil
+}
+
+// signAndPublish signs ev as the current user and publishes it to the
+// user's relays plus any extra relays (e.g. hints for the event being
+// replied to).
+func signAndPublish(ev *nostr.Event, extraRelays ...string) error {
+	if err := signEvent(ev); err != nil {
+		return err
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	_, _, err := relay.PublishAll(ctx, append(getRelayList(), extraRelays...), *ev)
+	return err
+}
+
+// publishPostTUI publishes a note as the current user. #hashtags become "t"
+// tags, like `hoot -m`.
+func publishPostTUI(content string) error {
+	ev := nostr.Event{Kind: 1, Content: content, CreatedAt: nostr.Now(), Tags: hashtagTags(content)}
+	return signAndPublish(&ev)
+}
+
+// fetchEvent finds an event by ID: the local cache first, then relays.
+func fetchEvent(id string) (*nostr.Event, error) {
+	if eventCache != nil {
+		if ev, err := eventCache.GetEvent(id); err == nil && ev != nil {
+			return ev, nil
 		}
-		event.PubKey, err = nostr.GetPublicKey(localPrivateKey)
-		if err != nil {
-			return fmt.Errorf("failed to get public key: %w", err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+	defer cancel()
+	evs := queryRelays(ctx, getRelayList(), nostr.Filter{IDs: []string{id}})
+	if len(evs) == 0 {
+		return nil, fmt.Errorf("couldn't find the post on your relays")
+	}
+	return evs[0], nil
+}
+
+// replyTags builds NIP-10 tags for a reply to parent: marked "root" and
+// "reply" e-tags (a reply to a top-level post only needs "root"), and p-tags
+// for the parent's author plus everyone the parent already mentions.
+func replyTags(parent *nostr.Event, me string) nostr.Tags {
+	rootID := ""
+	for _, t := range parent.Tags {
+		if len(t) >= 4 && t[0] == "e" && t[3] == "root" {
+			rootID = t[1]
+			break
 		}
-		if err := event.Sign(localPrivateKey); err != nil {
-			return fmt.Errorf("failed to sign event: %w", err)
+	}
+	if rootID == "" {
+		// Deprecated positional form: the first e-tag is the root.
+		for _, t := range parent.Tags {
+			if len(t) >= 2 && t[0] == "e" {
+				rootID = t[1]
+				break
+			}
 		}
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-	_, _, err = relay.PublishAll(ctx, getRelayList(), event)
-	return err
+	var tags nostr.Tags
+	if rootID == "" || rootID == parent.ID {
+		tags = append(tags, nostr.Tag{"e", parent.ID, "", "root", parent.PubKey})
+	} else {
+		tags = append(tags,
+			nostr.Tag{"e", rootID, "", "root"},
+			nostr.Tag{"e", parent.ID, "", "reply", parent.PubKey})
+	}
+
+	seen := map[string]bool{me: true}
+	addP := func(pk string) {
+		if pk != "" && !seen[pk] && nostr.IsValid32ByteHex(pk) {
+			seen[pk] = true
+			tags = append(tags, nostr.Tag{"p", pk})
+		}
+	}
+	addP(parent.PubKey)
+	for _, t := range parent.Tags {
+		if len(t) >= 2 && t[0] == "p" {
+			addP(t[1])
+		}
+	}
+	return tags
+}
+
+// publishReply replies to the event with the given ID.
+func publishReply(parentID, content string) error {
+	parent, err := fetchEvent(parentID)
+	if err != nil {
+		return err
+	}
+	ev := nostr.Event{Kind: 1, Content: content, CreatedAt: nostr.Now()}
+	ev.Tags = append(replyTags(parent, currentPubKey()), hashtagTags(content)...)
+	return signAndPublish(&ev)
+}
+
+// publishReaction likes (NIP-25 "+") the event with the given ID.
+func publishReaction(targetID string) error {
+	target, err := fetchEvent(targetID)
+	if err != nil {
+		return err
+	}
+	ev := nostr.Event{
+		Kind:      7,
+		Content:   "+",
+		CreatedAt: nostr.Now(),
+		Tags: nostr.Tags{
+			{"e", target.ID},
+			{"p", target.PubKey},
+			{"k", fmt.Sprint(target.Kind)},
+		},
+	}
+	return signAndPublish(&ev)
 }
 
 // editProfile publishes a new kind 0 (profile) event with the updated profile info.

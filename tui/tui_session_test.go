@@ -602,3 +602,108 @@ func TestTruncateRunesKeepsUTF8Valid(t *testing.T) {
 		t.Fatalf("%q", got)
 	}
 }
+
+func feedModel(t *testing.T, cfg Config) Model {
+	t.Helper()
+	if cfg.OnLoadFeed == nil {
+		cfg.OnLoadFeed = func() ([]FeedPost, error) {
+			return []FeedPost{
+				{ID: strings.Repeat("1", 64), Kind: 1, Author: strings.Repeat("a", 64), AuthorName: "Alice", Content: "hello world"},
+				{ID: strings.Repeat("2", 64), Kind: 7, Author: strings.Repeat("b", 64), Content: "[Reacted: ❤]"},
+			}, nil
+		}
+	}
+	m := newModelFromConfig(cfg)
+	m.loggedIn, m.screen = true, ScreenHome
+	m, cmd := press(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("f")})
+	m, _ = run(t, m, cmd)
+	return m
+}
+
+func TestReplyFromFeed(t *testing.T) {
+	var parent, text string
+	m := feedModel(t, Config{OnReply: func(p, c string) error { parent, text = p, c; return nil }})
+	m, _ = press(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("r")})
+	if m.screen != ScreenPost || !strings.Contains(m.View(), "Replying to Alice: hello world") {
+		t.Fatalf("composer:\n%s", m.View())
+	}
+	m = typeText(t, m, "same here")
+	m, cmd := press(t, m, tea.KeyMsg{Type: tea.KeyEnter})
+	m, _ = run(t, m, cmd)
+	if parent != strings.Repeat("1", 64) || text != "same here" || m.screen != ScreenFeed || !strings.Contains(m.message, "Reply posted") {
+		t.Fatalf("parent=%s text=%q screen=%v msg=%q", parent, text, m.screen, m.message)
+	}
+}
+
+func TestEscCancelsReplyBackToFeed(t *testing.T) {
+	m := feedModel(t, Config{OnReply: func(string, string) error { return nil }})
+	m, _ = press(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("r")})
+	m, _ = press(t, m, tea.KeyMsg{Type: tea.KeyEsc})
+	if m.screen != ScreenFeed || m.replyTo != nil {
+		t.Fatalf("screen=%v", m.screen)
+	}
+	// A plain post afterwards is not treated as a reply.
+	if strings.Contains((func() string { m.screen = ScreenPost; return m.View() })(), "Replying") {
+		t.Fatal("stale reply target")
+	}
+}
+
+func TestReplyInThreadReloadsThread(t *testing.T) {
+	loads := 0
+	m := feedModel(t, Config{
+		OnReply:       func(string, string) error { return nil },
+		OnLoadReplies: func(string) ([]FeedPost, error) { loads++; return nil, nil },
+	})
+	m, cmd := press(t, m, tea.KeyMsg{Type: tea.KeyEnter})
+	m, _ = run(t, m, cmd)
+	m, _ = press(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("r")}) // no replies: acts on the thread post
+	m = typeText(t, m, "hi")
+	m, cmd = press(t, m, tea.KeyMsg{Type: tea.KeyEnter})
+	m, cmd = run(t, m, cmd) // posted → reload
+	m, _ = run(t, m, cmd)
+	if m.screen != ScreenReplies || loads != 2 || !strings.Contains(m.message, "Reply posted") {
+		t.Fatalf("screen=%v loads=%d msg=%q", m.screen, loads, m.message)
+	}
+}
+
+func TestLikeFromFeed(t *testing.T) {
+	var liked string
+	m := feedModel(t, Config{OnReact: func(id string) error { liked = id; return nil }})
+	m, cmd := press(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("+")})
+	m, _ = run(t, m, cmd)
+	if liked != strings.Repeat("1", 64) || !strings.Contains(m.message, "Liked Alice's post") {
+		t.Fatalf("liked=%s msg=%q", liked, m.message)
+	}
+}
+
+func TestZapFromFeed(t *testing.T) {
+	var pk, id string
+	var sats int64
+	m := feedModel(t, Config{OnZap: func(p, e string, s int64) (string, error) {
+		pk, id, sats = p, e, s
+		return "Zapped 21 sats to alice@x", nil
+	}})
+	m, _ = press(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("z")})
+	if m.screen != ScreenTip || !strings.Contains(m.View(), "⚡ Zap") || !strings.Contains(m.View(), "To: Alice") {
+		t.Fatalf("zap prompt:\n%s", m.View())
+	}
+	m = typeText(t, m, "21")
+	m, cmd := press(t, m, tea.KeyMsg{Type: tea.KeyEnter})
+	m, _ = run(t, m, cmd)
+	if pk != strings.Repeat("a", 64) || id != strings.Repeat("1", 64) || sats != 21 {
+		t.Fatalf("OnZap(%s, %s, %d)", pk, id, sats)
+	}
+	if m.screen != ScreenFeed || !strings.Contains(m.message, "Zapped 21 sats") {
+		t.Fatalf("screen=%v msg=%q", m.screen, m.message)
+	}
+}
+
+func TestActionsIgnoreReactions(t *testing.T) {
+	called := false
+	m := feedModel(t, Config{OnReply: func(string, string) error { called = true; return nil }})
+	m, _ = press(t, m, tea.KeyMsg{Type: tea.KeyDown}) // the reaction
+	m, _ = press(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("r")})
+	if m.screen != ScreenFeed || called || !strings.Contains(m.message, "reaction") {
+		t.Fatalf("screen=%v msg=%q", m.screen, m.message)
+	}
+}

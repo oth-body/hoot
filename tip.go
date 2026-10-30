@@ -42,13 +42,18 @@ var ErrPaymentUnconfirmed = errors.New("wallet did not respond in time; the paym
 type TipResult struct {
 	LightningAddress string
 	AmountSats       int64
+	Zapped           bool   // sent as a NIP-57 zap (visible on Nostr), not a plain tip
 	Preimage         string // proof of payment, from the wallet
 	FeesPaidMsat     int64
 }
 
 // String renders a one-line human summary.
 func (r TipResult) String() string {
-	s := fmt.Sprintf("Paid %d sats to %s", r.AmountSats, r.LightningAddress)
+	verb := "Paid"
+	if r.Zapped {
+		verb = "Zapped"
+	}
+	s := fmt.Sprintf("%s %d sats to %s", verb, r.AmountSats, r.LightningAddress)
 	if r.FeesPaidMsat > 0 {
 		s += fmt.Sprintf(" (fee %d msat)", r.FeesPaidMsat)
 	}
@@ -60,21 +65,14 @@ func (r TipResult) String() string {
 // read from the user's kind-0 profile (lud16). progress, if non-nil, gets
 // short status lines for the CLI.
 func tipUser(ctx context.Context, target string, amountSats int64, progress func(string)) (*TipResult, error) {
-	say := func(f string, a ...any) {
-		if progress != nil {
-			progress(fmt.Sprintf(f, a...))
-		}
-	}
 	if amountSats <= 0 {
 		return nil, fmt.Errorf("amount must be a positive number of sats")
 	}
-
 	// Fail before any network work if the wallet isn't set up.
 	nwc, err := loadNWC()
 	if err != nil {
 		return nil, err
 	}
-
 	target = strings.TrimSpace(target)
 	lud16 := target
 	if !strings.Contains(target, "@") {
@@ -82,13 +80,53 @@ func tipUser(ctx context.Context, target string, amountSats int64, progress func
 		if err != nil {
 			return nil, err
 		}
-		say("Resolving Lightning address from Nostr profile...")
+		say(progress, "Resolving Lightning address from Nostr profile...")
 		lud16, err = extractLud16(ctx, hexPub, getRelayList())
 		if err != nil {
 			return nil, fmt.Errorf("could not find a lightning address for that user: %w", err)
 		}
 	}
-	say("Found lightning address: %s", lud16)
+	return payLightningAddress(ctx, nwc, lud16, amountSats, nil, progress)
+}
+
+// zapUser sends a NIP-57 zap to recipient (hex pubkey), optionally for a
+// specific event. If the recipient's Lightning address doesn't support
+// Nostr zaps it falls back to a plain tip (TipResult.Zapped is false).
+// The zap request is signed as the current user.
+func zapUser(ctx context.Context, recipient, eventID string, amountSats int64, comment string) (*TipResult, error) {
+	if amountSats <= 0 {
+		return nil, fmt.Errorf("amount must be a positive number of sats")
+	}
+	nwc, err := loadNWC()
+	if err != nil {
+		return nil, err
+	}
+	lud16, err := extractLud16(ctx, recipient, getRelayList())
+	if err != nil {
+		return nil, fmt.Errorf("could not find a lightning address for that user: %w", err)
+	}
+	zap := &zapTarget{Recipient: recipient, EventID: eventID, Comment: comment}
+	return payLightningAddress(ctx, nwc, lud16, amountSats, zap, nil)
+}
+
+// zapTarget describes a zap; nil means a plain tip.
+type zapTarget struct {
+	Recipient string // hex pubkey
+	EventID   string // optional
+	Comment   string
+}
+
+func say(progress func(string), f string, a ...any) {
+	if progress != nil {
+		progress(fmt.Sprintf(f, a...))
+	}
+}
+
+// payLightningAddress pays amountSats to lud16 through the wallet. With zap
+// set and a Lightning address that supports Nostr zaps (allowsNostr), it
+// attaches a signed kind-9734 zap request so the payment shows on Nostr.
+func payLightningAddress(ctx context.Context, nwc *nwcConn, lud16 string, amountSats int64, zap *zapTarget, progress func(string)) (*TipResult, error) {
+	say(progress, "Found lightning address: %s", lud16)
 
 	payReq, err := resolveLud16(ctx, lud16)
 	if err != nil {
@@ -100,13 +138,24 @@ func tipUser(ctx context.Context, target string, amountSats int64, progress func
 			lud16, (payReq.MinSendable+999)/1000, payReq.MaxSendable/1000, amountSats)
 	}
 
-	say("Fetching invoice for %d sats...", amountSats)
-	invoice, err := fetchLightningInvoice(ctx, payReq.Callback, msat)
+	var extra url.Values
+	zapped := false
+	if zap != nil && payReq.AllowsNostr && nostr.IsValid32ByteHex(payReq.NostrPubkey) {
+		req, err := buildZapRequest(zap, msat)
+		if err != nil {
+			return nil, err
+		}
+		extra = url.Values{"nostr": {req}}
+		zapped = true
+	}
+
+	say(progress, "Fetching invoice for %d sats...", amountSats)
+	invoice, err := fetchLightningInvoice(ctx, payReq.Callback, msat, extra)
 	if err != nil {
 		return nil, fmt.Errorf("failed to fetch invoice: %w", err)
 	}
 
-	say("Paying invoice via NWC...")
+	say(progress, "Paying invoice via NWC...")
 	res, err := payInvoiceNWC(ctx, nwc, invoice)
 	if err != nil {
 		return nil, err
@@ -114,9 +163,44 @@ func tipUser(ctx context.Context, target string, amountSats int64, progress func
 	return &TipResult{
 		LightningAddress: lud16,
 		AmountSats:       amountSats,
+		Zapped:           zapped,
 		Preimage:         res.Preimage,
 		FeesPaidMsat:     res.FeesPaid,
 	}, nil
+}
+
+// buildZapRequest returns a signed NIP-57 kind-9734 zap request as JSON.
+// The recipient's zapper publishes the matching zap receipt (kind 9735) to
+// the relays listed here once the invoice is paid.
+func buildZapRequest(zap *zapTarget, msat int64) (string, error) {
+	relays := nostr.Tag{"relays"}
+	for i, r := range getRelayList() {
+		if i == 5 {
+			break
+		}
+		relays = append(relays, r)
+	}
+	ev := nostr.Event{
+		Kind:      9734,
+		Content:   zap.Comment,
+		CreatedAt: nostr.Now(),
+		Tags: nostr.Tags{
+			relays,
+			{"amount", fmt.Sprint(msat)},
+			{"p", zap.Recipient},
+		},
+	}
+	if zap.EventID != "" {
+		ev.Tags = append(ev.Tags, nostr.Tag{"e", zap.EventID})
+	}
+	if err := signEvent(&ev); err != nil {
+		return "", fmt.Errorf("couldn't sign the zap request: %w", err)
+	}
+	b, err := json.Marshal(ev)
+	if err != nil {
+		return "", err
+	}
+	return string(b), nil
 }
 
 // parsePubKey accepts an npub or a 64-char hex pubkey.
@@ -146,6 +230,8 @@ type lnurlPayRequest struct {
 	MinSendable int64  `json:"minSendable"` // msat
 	MaxSendable int64  `json:"maxSendable"` // msat
 	Tag         string `json:"tag"`
+	AllowsNostr bool   `json:"allowsNostr"` // NIP-57: accepts zap requests
+	NostrPubkey string `json:"nostrPubkey"` // NIP-57: key that signs zap receipts
 	Status      string `json:"status"`
 	Reason      string `json:"reason"`
 }
@@ -206,13 +292,18 @@ func resolveLud16(ctx context.Context, lud16 string) (*lnurlPayRequest, error) {
 // amountMsat and checks the invoice really is for that amount — a
 // misbehaving server could otherwise hand back a bigger invoice and the
 // wallet would pay it.
-func fetchLightningInvoice(ctx context.Context, callback string, amountMsat int64) (string, error) {
+func fetchLightningInvoice(ctx context.Context, callback string, amountMsat int64, extra url.Values) (string, error) {
 	cb, err := url.Parse(callback)
 	if err != nil {
 		return "", fmt.Errorf("invalid callback URL: %w", err)
 	}
 	q := cb.Query()
 	q.Set("amount", fmt.Sprint(amountMsat))
+	for k, vs := range extra {
+		for _, v := range vs {
+			q.Add(k, v)
+		}
+	}
 	cb.RawQuery = q.Encode()
 
 	var data struct {

@@ -115,9 +115,9 @@ func (m Model) viewFeed() string {
 	if m.feedFollowing {
 		other = "global"
 	}
-	help := "↑/↓ select · Enter open thread · g " + other
-	if m.feedFollowing && m.onLoadFollowingFeed == nil {
-		help = "↑/↓ select · Enter open thread"
+	help := "↑/↓ select · Enter thread · r reply · + like · z zap"
+	if m.onLoadFollowingFeed != nil {
+		help += " · g " + other
 	}
 	b.WriteString(menuStyle.Render(help))
 	return b.String()
@@ -164,7 +164,7 @@ func (m Model) viewReplies() string {
 
 	b.WriteString("\n")
 	if m.threadPost != nil {
-		b.WriteString(menuStyle.Render("↑/↓ select · Enter open that thread · Esc back to feed"))
+		b.WriteString(menuStyle.Render("↑/↓ select · Enter open thread · r reply · + like · z zap · Esc back"))
 		return b.String()
 	}
 	b.WriteString(menuStyle.Render("Enter an event ID (hex, note1… or nevent1…):"))
