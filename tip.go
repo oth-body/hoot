@@ -23,6 +23,7 @@ import (
 	"github.com/nbd-wtf/go-nostr"
 	"github.com/nbd-wtf/go-nostr/nip04"
 	"github.com/nbd-wtf/go-nostr/nip19"
+	"github.com/nbd-wtf/go-nostr/nip44"
 )
 
 // lnurlHTTPClient is used for every LNURL request. 10s matches the LUD-06
@@ -517,28 +518,9 @@ func payInvoiceNWC(ctx context.Context, conn *nwcConn, invoice string) (*nwcPayR
 	if err != nil {
 		return nil, fmt.Errorf("invalid NWC secret: %w", err)
 	}
-	ss, err := nip04.ComputeSharedSecret(conn.WalletPubKey, conn.Secret)
+	crypt, err := newNWCCrypt(conn)
 	if err != nil {
-		return nil, fmt.Errorf("failed to compute shared secret: %w", err)
-	}
-
-	payload, _ := json.Marshal(map[string]any{
-		"method": "pay_invoice",
-		"params": map[string]any{"invoice": invoice},
-	})
-	content, err := nip04.Encrypt(string(payload), ss)
-	if err != nil {
-		return nil, fmt.Errorf("failed to encrypt request: %w", err)
-	}
-	req := nostr.Event{
-		PubKey:    clientPub,
-		CreatedAt: nostr.Now(),
-		Kind:      23194,
-		Tags:      nostr.Tags{{"p", conn.WalletPubKey}},
-		Content:   content,
-	}
-	if err := req.Sign(conn.Secret); err != nil {
-		return nil, fmt.Errorf("failed to sign NWC request: %w", err)
+		return nil, err
 	}
 
 	ctx, cancel := context.WithTimeout(ctx, nwcResponseTimeout)
@@ -549,6 +531,32 @@ func payInvoiceNWC(ctx context.Context, conn *nwcConn, invoice string) (*nwcPayR
 		return nil, fmt.Errorf("failed to connect to NWC relay %s: %w", conn.Relay, err)
 	}
 	defer rl.Close()
+
+	// NIP-47: use NIP-44 if the wallet's info event (kind 13194) says it
+	// supports it; otherwise (older wallets) NIP-04.
+	crypt.nip44 = walletSupportsNIP44(ctx, rl, conn.WalletPubKey)
+
+	payload, _ := json.Marshal(map[string]any{
+		"method": "pay_invoice",
+		"params": map[string]any{"invoice": invoice},
+	})
+	content, err := crypt.encrypt(string(payload))
+	if err != nil {
+		return nil, fmt.Errorf("failed to encrypt request: %w", err)
+	}
+	req := nostr.Event{
+		PubKey:    clientPub,
+		CreatedAt: nostr.Now(),
+		Kind:      23194,
+		Tags:      nostr.Tags{{"p", conn.WalletPubKey}},
+		Content:   content,
+	}
+	if crypt.nip44 {
+		req.Tags = append(req.Tags, nostr.Tag{"encryption", "nip44_v2"})
+	}
+	if err := req.Sign(conn.Secret); err != nil {
+		return nil, fmt.Errorf("failed to sign NWC request: %w", err)
+	}
 
 	sub, err := rl.Subscribe(ctx, nostr.Filters{{
 		Kinds:   []int{23195},
@@ -578,7 +586,7 @@ func payInvoiceNWC(ctx context.Context, conn *nwcConn, invoice string) (*nwcPayR
 			if ok, _ := ev.CheckSignature(); !ok {
 				continue
 			}
-			plain, err := nip04.Decrypt(ev.Content, ss)
+			plain, err := crypt.decrypt(ev.Content)
 			if err != nil {
 				continue // not for us / undecryptable
 			}
@@ -605,4 +613,68 @@ func payInvoiceNWC(ctx context.Context, conn *nwcConn, invoice string) (*nwcPayR
 			return &res, nil
 		}
 	}
+}
+
+// nwcCrypt encrypts NWC traffic with NIP-44 or NIP-04.
+type nwcCrypt struct {
+	nip44 bool
+	ck44  [32]byte
+	ss04  []byte
+}
+
+func newNWCCrypt(conn *nwcConn) (*nwcCrypt, error) {
+	ck, err := nip44.GenerateConversationKey(conn.WalletPubKey, conn.Secret)
+	if err != nil {
+		return nil, fmt.Errorf("invalid wallet connection keys: %w", err)
+	}
+	ss, err := nip04.ComputeSharedSecret(conn.WalletPubKey, conn.Secret)
+	if err != nil {
+		return nil, fmt.Errorf("invalid wallet connection keys: %w", err)
+	}
+	return &nwcCrypt{ck44: ck, ss04: ss}, nil
+}
+
+func (c *nwcCrypt) encrypt(plain string) (string, error) {
+	if c.nip44 {
+		return nip44.Encrypt(plain, c.ck44)
+	}
+	return nip04.Encrypt(plain, c.ss04)
+}
+
+// decrypt tries the negotiated scheme first, then the other one (a wallet
+// may answer in either).
+func (c *nwcCrypt) decrypt(ct string) (string, error) {
+	first, second := func() (string, error) { return nip04.Decrypt(ct, c.ss04) }, func() (string, error) { return nip44.Decrypt(ct, c.ck44) }
+	if c.nip44 {
+		first, second = second, first
+	}
+	if p, err := first(); err == nil {
+		return p, nil
+	}
+	return second()
+}
+
+// walletSupportsNIP44 reads the wallet's NIP-47 info event (kind 13194) and
+// reports whether its "encryption" tag lists nip44_v2. No info event, or no
+// tag, means NIP-04 only.
+func walletSupportsNIP44(ctx context.Context, rl *relay.Relay, wallet string) bool {
+	qctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	ch, err := rl.QueryEvents(qctx, nostr.Filter{Kinds: []int{13194}, Authors: []string{wallet}, Limit: 1})
+	if err != nil {
+		return false
+	}
+	supported := false
+	for ev := range ch {
+		for _, t := range ev.Tags {
+			if len(t) >= 2 && t[0] == "encryption" {
+				for _, scheme := range strings.Fields(t[1]) {
+					if scheme == "nip44_v2" {
+						supported = true
+					}
+				}
+			}
+		}
+	}
+	return supported
 }
