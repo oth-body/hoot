@@ -655,6 +655,14 @@ func (m Model) handleLoginEnter() (tea.Model, tea.Cmd) {
 
 		case 100: // Password entered - create profile
 			password := m.textInput.Value()
+			// The prompt used to say "Leave empty to skip saving", but an
+			// empty password still saved the profile, just encrypted with
+			// "" (i.e. effectively unprotected). Require one instead.
+			if password == "" {
+				m.message = "Please choose a password to encrypt your key"
+				m.messageStyle = errorStyle
+				return m, nil
+			}
 
 			if m.onAddProfile != nil {
 				privKey, pubKey, err := m.onAddProfile(m.tempName, m.tempNsec, password)
@@ -1131,7 +1139,7 @@ func (m Model) viewLogin() string {
 		case 100: // Password entry
 			b.WriteString(menuStyle.Render("Create a password to protect this profile:"))
 			b.WriteString("\n")
-			b.WriteString(lipgloss.NewStyle().Foreground(lipgloss.Color("240")).Render("(Leave empty to skip saving)"))
+			b.WriteString(lipgloss.NewStyle().Foreground(lipgloss.Color("240")).Render("(Encrypts your key on this computer. It can't be recovered.)"))
 			b.WriteString("\n\n")
 			b.WriteString(m.textInput.View())
 		default:

@@ -374,3 +374,22 @@ func TestHomeShowsFullNpub(t *testing.T) {
 		t.Fatalf("home view missing full npub %s:\n%s", npub, v)
 	}
 }
+
+// Regression: the prompt said "Leave empty to skip saving", but an empty
+// password saved the nsec encrypted with "" — effectively unprotected.
+func TestAddProfileRequiresPassword(t *testing.T) {
+	called := false
+	m := newModelFromConfig(Config{
+		OnAddProfile: func(name, nsec, pw string) (string, string, error) { called = true; return "sk", "pk", nil },
+	})
+	m.addingProfile = true
+	m.cursor = 100
+	m.tempName, m.tempNsec = "me", "nsec1whatever"
+	if strings.Contains(m.View(), "skip saving") {
+		t.Fatal("prompt still offers to skip saving")
+	}
+	m, _ = press(t, m, tea.KeyMsg{Type: tea.KeyEnter})
+	if called || m.loggedIn || m.cursor != 100 || !strings.Contains(m.message, "choose a password") {
+		t.Fatalf("empty password accepted: called=%v loggedIn=%v cursor=%d msg=%q", called, m.loggedIn, m.cursor, m.message)
+	}
+}
