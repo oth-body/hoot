@@ -19,41 +19,29 @@ func (m Model) handleHomeEnter() (tea.Model, tea.Cmd) {
 		m.textInput.Focus()
 	case 1: // Feed
 		m.screen = ScreenFeed
-		m.feedLoading = true
 		m.feedPosts = nil
 		m.feedScroll = 0
+		m.message = ""
 		if m.onLoadFeed != nil {
-			posts, err := m.onLoadFeed()
-			if err != nil {
-				m.message = fmt.Sprintf("Failed to load feed: %v", err)
-				m.messageStyle = errorStyle
-			} else {
-				m.feedPosts = posts
-			}
-			m.feedLoading = false
+			m.feedLoading = true
+			return m, m.startLoad(ScreenFeed, m.onLoadFeed)
 		}
 	case 2: // DMs
 		m.screen = ScreenDMs
-		m.dmLoading = true
 		m.dmPosts = nil
 		m.dmScroll = 0
+		m.message = ""
 		if m.onLoadDMs != nil && m.privateKey != "" {
-			posts, err := m.onLoadDMs(m.privateKey)
-			if err != nil {
-				m.message = fmt.Sprintf("Failed to load DMs: %v", err)
-				m.messageStyle = errorStyle
-			} else {
-				m.dmPosts = posts
-			}
-			m.dmLoading = false
-		} else {
-			m.message = "No private key available for decrypting DMs"
-			m.messageStyle = errorStyle
-			m.dmLoading = false
+			m.dmLoading = true
+			load, sk := m.onLoadDMs, m.privateKey
+			return m, m.startLoad(ScreenDMs, func() ([]FeedPost, error) { return load(sk) })
 		}
+		m.dmLoading = false
+		m.message = "No private key available for decrypting DMs"
+		m.messageStyle = errorStyle
 	case 3: // Replies/Reactions
 		m.screen = ScreenReplies
-		m.replyLoading = true
+		m.replyLoading = false
 		m.replyPosts = nil
 		m.replyScroll = 0
 		m.textInput.Placeholder = "Enter event ID to view replies..."

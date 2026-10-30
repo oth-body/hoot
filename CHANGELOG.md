@@ -7,6 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+- TUI: the feed, DMs, replies and posting no longer freeze the screen. They run in the background with a spinner, a result that arrives after you've left the screen is discarded, and a failed post keeps your draft in the composer.
 - TUI: delete a saved profile from the login screen: highlight it, press `x`, confirm with `y`.
 - TUI: the last-used (★) profile is highlighted when the login screen opens.
 - Internal: login steps are an explicit state instead of magic cursor values (50/51/100/200); `hoot.go` and `tui/tui.go` are split into files by concern.

@@ -6,7 +6,9 @@ func (m Model) typing() bool {
 	switch m.screen {
 	case ScreenLogin:
 		return m.step.typing()
-	case ScreenPost, ScreenReplies:
+	case ScreenPost:
+		return !m.posting
+	case ScreenReplies:
 		return true
 	case ScreenTip:
 		return !m.tipping

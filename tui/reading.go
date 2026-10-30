@@ -16,20 +16,15 @@ func (m Model) handleRepliesEnter() (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 
-	if m.onLoadReplies != nil {
-		replies, err := m.onLoadReplies(eventID)
-		if err != nil {
-			m.message = fmt.Sprintf("Failed to load replies: %v", err)
-			m.messageStyle = errorStyle
-		} else {
-			m.replyPosts = replies
-			m.replyLoading = false
-			m.replyScroll = 0
-		}
-	}
-
 	m.textInput.Reset()
-	return m, nil
+	if m.onLoadReplies == nil {
+		return m, nil
+	}
+	m.replyLoading = true
+	m.replyPosts = nil
+	m.message = ""
+	load := m.onLoadReplies
+	return m, m.startLoad(ScreenReplies, func() ([]FeedPost, error) { return load(eventID) })
 }
 
 func (m Model) viewFeed() string {
@@ -39,7 +34,7 @@ func (m Model) viewFeed() string {
 	b.WriteString("\n\n")
 
 	if m.feedLoading {
-		b.WriteString(menuStyle.Render("Loading..."))
+		b.WriteString(menuStyle.Render(m.spinner.View() + " Loading feed from your relays..."))
 		return b.String()
 	}
 
@@ -96,7 +91,7 @@ func (m Model) viewDMs() string {
 	b.WriteString("\n\n")
 
 	if m.dmLoading {
-		b.WriteString(menuStyle.Render("Loading..."))
+		b.WriteString(menuStyle.Render(m.spinner.View() + " Loading DMs from your relays..."))
 		return b.String()
 	}
 
@@ -153,7 +148,7 @@ func (m Model) viewReplies() string {
 	b.WriteString("\n\n")
 
 	if m.replyLoading {
-		b.WriteString(menuStyle.Render("Loading..."))
+		b.WriteString(menuStyle.Render(m.spinner.View() + " Loading replies from your relays..."))
 		return b.String()
 	}
 
