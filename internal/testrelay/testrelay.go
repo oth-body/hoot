@@ -1,12 +1,13 @@
 // Package testrelay is a minimal in-memory NIP-01 relay for end-to-end tests.
 //
 // It supports EVENT (signature-checked, acknowledged with OK), REQ (stored
-// events matching any filter, newest first, honouring limit, then EOSE) and
-// CLOSE. That is enough for hoot's publish / feed / DM / profile flows to run
+// events matching any filter, newest first, honouring limit, then EOSE, then
+// live events matching the subscription) and CLOSE. That is enough for hoot's publish / feed / DM / profile flows to run
 // against a real websocket without touching the public network.
 package testrelay
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -22,14 +23,20 @@ import (
 type Relay struct {
 	URL string // ws://127.0.0.1:port
 
+	// OnEvent, if set, is called (in its own goroutine) for every event a
+	// client publishes, after it is stored and broadcast. Tests use it to
+	// play a counterparty, e.g. an NWC wallet answering a payment request.
+	OnEvent func(ev *nostr.Event)
+
 	srv    *httptest.Server
 	mu     sync.Mutex
 	events []*nostr.Event
+	subs   map[*websocket.Conn]map[string]nostr.Filters
 }
 
 // Start launches a relay on a random localhost port. Call Close when done.
 func Start() *Relay {
-	r := &Relay{}
+	r := &Relay{subs: map[*websocket.Conn]map[string]nostr.Filters{}}
 	r.srv = httptest.NewServer(http.HandlerFunc(r.serve))
 	r.URL = "ws://" + strings.TrimPrefix(r.srv.URL, "http://")
 	return r
@@ -48,11 +55,37 @@ func (r *Relay) Events() []*nostr.Event {
 }
 
 // Add stores ev directly, bypassing the websocket (for seeding fixtures).
-// The event must already be signed.
+// The event must already be signed. It is not sent to live subscriptions.
 func (r *Relay) Add(ev *nostr.Event) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.events = append(r.events, ev)
+}
+
+// Publish stores ev and delivers it to every open subscription it matches,
+// as if a client had published it.
+func (r *Relay) Publish(ev *nostr.Event) {
+	r.mu.Lock()
+	r.events = append(r.events, ev)
+	type target struct {
+		c   *websocket.Conn
+		sub string
+	}
+	var targets []target
+	for c, subs := range r.subs {
+		for id, filters := range subs {
+			if filters.Match(ev) {
+				targets = append(targets, target{c, id})
+			}
+		}
+	}
+	r.mu.Unlock()
+
+	for _, t := range targets {
+		if b, err := json.Marshal([]any{"EVENT", t.sub, ev}); err == nil {
+			_ = t.c.Write(context.Background(), websocket.MessageText, b) // Write is concurrency-safe
+		}
+	}
 }
 
 func (r *Relay) query(f nostr.Filter) []*nostr.Event {
@@ -79,6 +112,15 @@ func (r *Relay) serve(w http.ResponseWriter, req *http.Request) {
 	defer c.CloseNow()
 	c.SetReadLimit(1 << 20)
 	ctx := req.Context()
+
+	r.mu.Lock()
+	r.subs[c] = map[string]nostr.Filters{}
+	r.mu.Unlock()
+	defer func() {
+		r.mu.Lock()
+		delete(r.subs, c)
+		r.mu.Unlock()
+	}()
 
 	send := func(v ...any) error {
 		b, err := json.Marshal(v)
@@ -113,8 +155,11 @@ func (r *Relay) serve(w http.ResponseWriter, req *http.Request) {
 				_ = send("OK", ev.ID, false, "invalid: bad signature")
 				continue
 			}
-			r.Add(&ev)
 			_ = send("OK", ev.ID, true, "")
+			r.Publish(&ev)
+			if r.OnEvent != nil {
+				go r.OnEvent(&ev)
+			}
 
 		case "REQ":
 			if len(msg) < 2 {
@@ -123,11 +168,13 @@ func (r *Relay) serve(w http.ResponseWriter, req *http.Request) {
 			var subID string
 			_ = json.Unmarshal(msg[1], &subID)
 			seen := map[string]bool{}
+			var filters nostr.Filters
 			for _, raw := range msg[2:] {
 				var f nostr.Filter
 				if err := json.Unmarshal(raw, &f); err != nil {
 					continue
 				}
+				filters = append(filters, f)
 				for _, ev := range r.query(f) {
 					if seen[ev.ID] {
 						continue
@@ -137,9 +184,19 @@ func (r *Relay) serve(w http.ResponseWriter, req *http.Request) {
 				}
 			}
 			_ = send("EOSE", subID)
+			r.mu.Lock()
+			r.subs[c][subID] = filters
+			r.mu.Unlock()
 
 		case "CLOSE":
-			// Nothing to tear down: subscriptions don't stream live events.
+			if len(msg) < 2 {
+				continue
+			}
+			var subID string
+			_ = json.Unmarshal(msg[1], &subID)
+			r.mu.Lock()
+			delete(r.subs[c], subID)
+			r.mu.Unlock()
 		}
 	}
 }

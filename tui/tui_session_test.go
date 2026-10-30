@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"errors"
 	"strings"
 	"testing"
 
@@ -183,5 +184,83 @@ func TestAddProfileKeepsPrivateKeyForDMs(t *testing.T) {
 	m, _ = press(t, m, tea.KeyMsg{Type: tea.KeyEnter})
 	if dmKey != "sk-hex" {
 		t.Fatalf("DMs loaded with key %q; message=%q", dmKey, m.message)
+	}
+}
+
+func typeText(t *testing.T, m Model, s string) Model {
+	t.Helper()
+	m, _ = press(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(s)})
+	return m
+}
+
+// The Tip screen: recipient → amount → background payment → result.
+// Previously Enter on this screen did nothing at all.
+func TestTipScreenFlow(t *testing.T) {
+	var gotTarget string
+	var gotSats int64
+	m := newModelFromConfig(Config{OnTip: func(target string, sats int64) (string, error) {
+		gotTarget, gotSats = target, sats
+		return "Paid 21 sats to alice@example.com", nil
+	}})
+	m.loggedIn, m.screen, m.cursor = true, ScreenHome, 4
+	m, _ = press(t, m, tea.KeyMsg{Type: tea.KeyEnter})
+	if m.screen != ScreenTip {
+		t.Fatalf("screen = %v", m.screen)
+	}
+
+	// Empty recipient is rejected.
+	m, _ = press(t, m, tea.KeyMsg{Type: tea.KeyEnter})
+	if m.tipStep != 0 || !strings.Contains(m.message, "who to tip") {
+		t.Fatalf("empty recipient accepted: step=%d msg=%q", m.tipStep, m.message)
+	}
+
+	m = typeText(t, m, "alice@example.com")
+	m, _ = press(t, m, tea.KeyMsg{Type: tea.KeyEnter})
+	if m.tipStep != 1 || m.tipTarget != "alice@example.com" || !strings.Contains(m.View(), "To: alice@example.com") {
+		t.Fatalf("not on amount step: %+v\n%s", m.tipStep, m.View())
+	}
+
+	// Bad amounts are rejected without paying.
+	for _, bad := range []string{"abc", "0", "-5", "1.5"} {
+		m.textInput.SetValue(bad)
+		var cmd tea.Cmd
+		m, cmd = press(t, m, tea.KeyMsg{Type: tea.KeyEnter})
+		if cmd != nil || m.tipping || !strings.Contains(m.message, "whole number") {
+			t.Fatalf("amount %q accepted (msg=%q)", bad, m.message)
+		}
+	}
+
+	m.textInput.SetValue("21")
+	m, cmd := press(t, m, tea.KeyMsg{Type: tea.KeyEnter})
+	if !m.tipping || cmd == nil || !strings.Contains(m.View(), "Waiting for your wallet") {
+		t.Fatalf("payment not started: tipping=%v\n%s", m.tipping, m.View())
+	}
+	// Enter while paying is ignored.
+	if _, c := press(t, m, tea.KeyMsg{Type: tea.KeyEnter}); c != nil {
+		t.Fatal("second payment started while one was in flight")
+	}
+
+	m, _ = press(t, m, cmd())
+	if gotTarget != "alice@example.com" || gotSats != 21 {
+		t.Fatalf("OnTip(%q, %d)", gotTarget, gotSats)
+	}
+	if m.tipping || m.tipStep != 0 || !strings.Contains(m.View(), "⚡ Paid 21 sats") {
+		t.Fatalf("result not shown:\n%s", m.View())
+	}
+}
+
+func TestTipScreenShowsFailure(t *testing.T) {
+	m := newModelFromConfig(Config{OnTip: func(string, int64) (string, error) {
+		return "", errors.New("wallet error INSUFFICIENT_BALANCE")
+	}})
+	m.loggedIn, m.screen = true, ScreenTip
+	m.resetTipForm()
+	m = typeText(t, m, "alice@example.com")
+	m, _ = press(t, m, tea.KeyMsg{Type: tea.KeyEnter})
+	m = typeText(t, m, "21")
+	m, cmd := press(t, m, tea.KeyMsg{Type: tea.KeyEnter})
+	m, _ = press(t, m, cmd())
+	if !strings.Contains(m.View(), "Tip failed: wallet error INSUFFICIENT_BALANCE") {
+		t.Fatalf("failure not shown:\n%s", m.View())
 	}
 }

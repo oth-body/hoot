@@ -2,6 +2,7 @@ package tui
 
 import (
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 
@@ -152,6 +153,16 @@ type Model struct {
 	// Called on "Switch Profile" and when the user backs out of the QR
 	// screen, so a stale session can never sign events for the next login.
 	onLogout func()
+
+	// onTip pays sats to target (lightning address, npub or hex pubkey)
+	// and returns a one-line summary. It blocks until the wallet answers,
+	// so the model runs it in a tea.Cmd.
+	onTip func(target string, sats int64) (string, error)
+
+	// Tip screen state
+	tipStep   int    // 0 = entering recipient, 1 = entering amount
+	tipTarget string // recipient from step 0
+	tipping   bool   // payment in flight
 }
 
 // NewModel creates a new TUI model
@@ -473,6 +484,18 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return checkQRTickMsg{}
 		})
 
+	case tipResultMsg:
+		m.tipping = false
+		if msg.err != nil {
+			m.message = fmt.Sprintf("Tip failed: %v", msg.err)
+			m.messageStyle = errorStyle
+		} else {
+			m.message = "⚡ " + msg.summary
+			m.messageStyle = successStyle
+		}
+		m.resetTipForm()
+		return m, nil
+
 	case checkQRTickMsg:
 		// Fired by the retry timer above — run another check, unless the
 		// user has since left the QR screen (esc), in which case the
@@ -552,6 +575,8 @@ func (m Model) handleEnter() (tea.Model, tea.Cmd) {
 		return m.handleRepliesEnter()
 	case ScreenRelays:
 		return m.handleRelaysEnter()
+	case ScreenTip:
+		return m.handleTipEnter()
 	}
 	return m, nil
 }
@@ -885,9 +910,10 @@ func (m Model) handleHomeEnter() (tea.Model, tea.Cmd) {
 		m.textInput.Focus()
 	case 4: // Tip
 		m.screen = ScreenTip
-		m.textInput.Placeholder = "Enter npub or lightning address..."
-		m.textInput.Reset()
-		m.textInput.Focus()
+		m.message = ""
+		if !m.tipping {
+			m.resetTipForm()
+		}
 	case 5: // Relays
 		m.screen = ScreenRelays
 		m.addingRelay = false
@@ -1498,11 +1524,80 @@ func (m Model) viewTip() string {
 
 	b.WriteString(titleStyle.Render("⚡ Tip Someone"))
 	b.WriteString("\n\n")
-	b.WriteString(m.textInput.View())
-	b.WriteString("\n\n")
-	b.WriteString(menuStyle.Render("Enter npub or lightning address, then amount"))
+	switch {
+	case m.tipping:
+		b.WriteString(menuStyle.Render(m.spinner.View() + " Waiting for your wallet to pay..."))
+	case m.tipStep == 1:
+		b.WriteString(menuStyle.Render("To: " + m.tipTarget))
+		b.WriteString("\n")
+		b.WriteString(m.textInput.View())
+		b.WriteString("\n\n")
+		b.WriteString(menuStyle.Render("Enter the amount in sats"))
+	default:
+		b.WriteString(m.textInput.View())
+		b.WriteString("\n\n")
+		b.WriteString(menuStyle.Render("Enter a lightning address (name@domain), npub or hex pubkey"))
+	}
 
 	return b.String()
+}
+
+// tipResultMsg carries the outcome of a background tip payment.
+type tipResultMsg struct {
+	summary string
+	err     error
+}
+
+// resetTipForm puts the tip screen back at the recipient step.
+func (m *Model) resetTipForm() {
+	m.tipStep = 0
+	m.tipTarget = ""
+	m.textInput.Placeholder = "name@domain, npub1... or hex pubkey"
+	m.textInput.EchoMode = textinput.EchoNormal
+	m.textInput.Reset()
+	m.textInput.Focus()
+}
+
+func (m Model) handleTipEnter() (tea.Model, tea.Cmd) {
+	if m.tipping {
+		return m, nil
+	}
+	value := strings.TrimSpace(m.textInput.Value())
+
+	if m.tipStep == 0 {
+		if value == "" {
+			m.message = "Enter who to tip"
+			m.messageStyle = errorStyle
+			return m, nil
+		}
+		m.tipTarget = value
+		m.tipStep = 1
+		m.message = ""
+		m.textInput.Placeholder = "Amount in sats, e.g. 21"
+		m.textInput.Reset()
+		m.textInput.Focus()
+		return m, nil
+	}
+
+	sats, err := strconv.ParseInt(strings.ReplaceAll(value, ",", ""), 10, 64)
+	if err != nil || sats <= 0 {
+		m.message = "Amount must be a whole number of sats greater than 0"
+		m.messageStyle = errorStyle
+		return m, nil
+	}
+	if m.onTip == nil {
+		m.message = "Tipping is not available"
+		m.messageStyle = errorStyle
+		return m, nil
+	}
+
+	m.tipping = true
+	m.message = ""
+	target, onTip := m.tipTarget, m.onTip
+	return m, func() tea.Msg {
+		summary, err := onTip(target, sats)
+		return tipResultMsg{summary: summary, err: err}
+	}
 }
 
 func (m Model) viewRelays() string {
@@ -1566,6 +1661,8 @@ type Config struct {
 	OnDeleteProfile func(id string) error
 	// OnLogout clears the host's signing state (see Model.onLogout).
 	OnLogout func()
+	// OnTip pays a tip (see Model.onTip).
+	OnTip func(target string, sats int64) (string, error)
 }
 
 // logout clears all login state in the model and asks the host process to
@@ -1635,6 +1732,7 @@ func newModelFromConfig(cfg Config) Model {
 	m.onAddProfile = cfg.OnAddProfile
 	m.onDeleteProfile = cfg.OnDeleteProfile
 	m.onLogout = cfg.OnLogout
+	m.onTip = cfg.OnTip
 
 	// Load profiles on startup
 	if m.onListProfiles != nil {
