@@ -98,6 +98,10 @@ type Model struct {
 	currentProfileNIP05 string // NIP-05 identifier from kind-0 metadata (Amber login only)
 	lastUsedProfileID   string
 
+	// Background work (see async.go)
+	loadGen int  // bumped per load; stale results are dropped
+	posting bool // a post is being published
+
 	// Feed state
 	feedPosts   []FeedPost
 	feedLoading bool
@@ -479,6 +483,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, tea.Tick(time.Second, func(t time.Time) tea.Msg {
 			return checkQRTickMsg{}
 		})
+
+	case loadedMsg:
+		return m.handleLoaded(msg)
+
+	case postedMsg:
+		return m.handlePosted(msg)
 
 	case tipResultMsg:
 		m.tipping = false

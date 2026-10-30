@@ -1,7 +1,6 @@
 package tui
 
 import (
-	"fmt"
 	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -15,21 +14,13 @@ func (m Model) handlePostEnter() (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 
-	if m.onPost != nil {
-		err := m.onPost(content)
-		if err != nil {
-			m.message = fmt.Sprintf("Failed to post: %v", err)
-			m.messageStyle = errorStyle
-			return m, nil
-		}
+	if m.posting || m.onPost == nil {
+		return m, nil
 	}
-
-	m.message = "Posted successfully!"
-	m.messageStyle = successStyle
-	m.textInput.Reset()
-	m.screen = ScreenHome
-	m.cursor = 0
-	return m, nil
+	m.posting = true
+	m.message = ""
+	post := m.onPost
+	return m, func() tea.Msg { return postedMsg{err: post(content)} }
 }
 
 func (m Model) viewPost() string {
@@ -39,7 +30,11 @@ func (m Model) viewPost() string {
 	b.WriteString("\n\n")
 	b.WriteString(m.textInput.View())
 	b.WriteString("\n\n")
-	b.WriteString(menuStyle.Render("Press Enter to post"))
+	if m.posting {
+		b.WriteString(menuStyle.Render(m.spinner.View() + " Publishing to your relays..."))
+	} else {
+		b.WriteString(menuStyle.Render("Press Enter to post"))
+	}
 
 	return b.String()
 }

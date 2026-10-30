@@ -2,6 +2,7 @@ package tui
 
 import (
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -15,6 +16,16 @@ func press(t *testing.T, m Model, msg tea.Msg) (Model, tea.Cmd) {
 	t.Helper()
 	u, cmd := m.Update(msg)
 	return u.(Model), cmd
+}
+
+// run executes cmd (as the bubbletea runtime would) and feeds its message
+// back into the model.
+func run(t *testing.T, m Model, cmd tea.Cmd) (Model, tea.Cmd) {
+	t.Helper()
+	if cmd == nil {
+		t.Fatal("expected a command")
+	}
+	return press(t, m, cmd())
 }
 
 func isQuit(cmd tea.Cmd) bool {
@@ -179,7 +190,8 @@ func TestAddProfileKeepsPrivateKeyForDMs(t *testing.T) {
 		t.Fatalf("loggedIn=%v privateKey=%q", m.loggedIn, m.privateKey)
 	}
 	m.cursor = 2 // [d] View DMs
-	m, _ = press(t, m, tea.KeyMsg{Type: tea.KeyEnter})
+	m, cmd := press(t, m, tea.KeyMsg{Type: tea.KeyEnter})
+	m, _ = run(t, m, cmd)
 	if dmKey != "sk-hex" {
 		t.Fatalf("DMs loaded with key %q; message=%q", dmKey, m.message)
 	}
@@ -313,7 +325,8 @@ func TestComposerAcceptsShortcutLetters(t *testing.T) {
 			t.Fatalf("typing %q quit the app", r)
 		}
 	}
-	m, _ = press(t, m, tea.KeyMsg{Type: tea.KeyEnter})
+	m, cmd := press(t, m, tea.KeyMsg{Type: tea.KeyEnter})
+	m, _ = run(t, m, cmd)
 	if posted != "quit? press q, r, s, d" {
 		t.Fatalf("posted %q", posted)
 	}
@@ -459,5 +472,70 @@ func TestLoginMenuNavigationBounds(t *testing.T) {
 	items := m.loginMenuItems()
 	if m.cursor != len(items)-1 || items[m.cursor].action != actRelays {
 		t.Fatalf("cursor=%d, want last item (relays)", m.cursor)
+	}
+}
+
+// Loads run in the background: Enter returns immediately with a spinner,
+// and the result fills the screen when it arrives.
+func TestFeedLoadsInBackground(t *testing.T) {
+	release := make(chan struct{})
+	m := newModelFromConfig(Config{OnLoadFeed: func() ([]FeedPost, error) {
+		<-release // a slow relay
+		return []FeedPost{{Author: "a", Content: "hello", CreatedAt: "now"}}, nil
+	}})
+	m.loggedIn, m.screen = true, ScreenHome
+	m, cmd := press(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("f")})
+	if m.screen != ScreenFeed || !m.feedLoading || cmd == nil {
+		t.Fatalf("screen=%v loading=%v cmd=%v", m.screen, m.feedLoading, cmd != nil)
+	}
+	if !strings.Contains(m.View(), "Loading feed") {
+		t.Fatalf("no loading indicator:\n%s", m.View())
+	}
+	done := make(chan tea.Msg)
+	go func() { done <- cmd() }()
+	close(release)
+	m, _ = press(t, m, <-done)
+	if m.feedLoading || len(m.feedPosts) != 1 || !strings.Contains(m.View(), "hello") {
+		t.Fatalf("feed not shown: loading=%v posts=%v", m.feedLoading, m.feedPosts)
+	}
+}
+
+// A result that arrives after the user has left the screen (or started a
+// newer load) is dropped instead of overwriting what they're looking at.
+func TestStaleLoadIsIgnored(t *testing.T) {
+	calls := 0
+	m := newModelFromConfig(Config{OnLoadFeed: func() ([]FeedPost, error) {
+		calls++
+		return []FeedPost{{Content: fmt.Sprint("load ", calls)}}, nil
+	}})
+	m.loggedIn, m.screen = true, ScreenHome
+	m, first := press(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("f")})
+	m, _ = press(t, m, tea.KeyMsg{Type: tea.KeyEsc})
+	m, second := press(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("f")})
+	firstMsg := first() // slow first load finishes late...
+	m, _ = press(t, m, second())
+	m, _ = press(t, m, firstMsg) // ...and must not replace the newer result
+	if len(m.feedPosts) != 1 || m.feedPosts[0].Content != "load 2" {
+		t.Fatalf("feedPosts = %v", m.feedPosts)
+	}
+}
+
+func TestPostFailureKeepsDraft(t *testing.T) {
+	m := newModelFromConfig(Config{OnPost: func(string) error { return errors.New("failed to publish to any relay") }})
+	m.loggedIn, m.screen = true, ScreenHome
+	m, _ = press(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("p")})
+	m = typeText(t, m, "draft")
+	m, cmd := press(t, m, tea.KeyMsg{Type: tea.KeyEnter})
+	if !m.posting || !strings.Contains(m.View(), "Publishing") {
+		t.Fatal("no publishing indicator")
+	}
+	// Typing and Enter are ignored while publishing.
+	m = typeText(t, m, "x")
+	if _, c := press(t, m, tea.KeyMsg{Type: tea.KeyEnter}); c != nil {
+		t.Fatal("second publish started")
+	}
+	m, _ = press(t, m, cmd())
+	if m.posting || m.screen != ScreenPost || m.textInput.Value() != "draft" || !strings.Contains(m.message, "Failed to post") {
+		t.Fatalf("posting=%v screen=%v draft=%q msg=%q", m.posting, m.screen, m.textInput.Value(), m.message)
 	}
 }
