@@ -69,3 +69,24 @@ jobs:
         with:
           name: hoot-${{ matrix.goos }}-${{ matrix.goarch }}
           path: hoot*
+
+  vulncheck:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      # Informational: every known vuln in any required module, reachable or not
+      # (roughly what Dependabot reports).
+      - name: govulncheck (all modules)
+        continue-on-error: true
+        run: go run golang.org/x/vuln/cmd/govulncheck@latest -scan module
+
+      # Gating: vulnerabilities in code hoot actually calls.
+      - name: govulncheck (reachable code)
+        run: go run golang.org/x/vuln/cmd/govulncheck@latest ./...
