@@ -10,7 +10,7 @@ before:
 builds:
   - id: hoot
     binary: hoot
-    main: ./hoot.go
+    main: .
     env:
       - CGO_ENABLED=0
     goos:

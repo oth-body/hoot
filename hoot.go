@@ -10,8 +10,6 @@ import (
 	"hoot/nip46"
 	"hoot/tui"
 	"log"
-	"net/http"
-	"net/url"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -1139,258 +1137,6 @@ func findHandlers(kind int) ([]struct {
 	return handlers, nil
 }
 
-func payInvoiceNWC(invoice string) error {
-	// 1. Get NWC URI
-	uriStr, err := getNWCURI()
-	if err != nil {
-		return fmt.Errorf("failed to get NWC URI (use -nwc to set it): %w", err)
-	}
-	// Parse URI: nostr+walletconnect://<pubkey>?relay=<relay>&secret=<secret>
-	u, err := url.Parse(uriStr)
-	if err != nil {
-		return fmt.Errorf("invalid NWC URI: %w", err)
-	}
-	if u.Scheme != "nostr+walletconnect" {
-		return fmt.Errorf("invalid scheme, expected nostr+walletconnect")
-	}
-
-	walletPubKey := u.Hostname() // authority is pubkey
-	relayURL := u.Query().Get("relay")
-	secret := u.Query().Get("secret")
-	if walletPubKey == "" || relayURL == "" || secret == "" {
-		return fmt.Errorf("incomplete NWC URI")
-	}
-
-	// 2. Connect to Relay. Use a 30s timeout so a hung wallet doesn't
-	// freeze `hoot -tip` forever (matches LNURL spec recommended timeout).
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-
-	relay, err := nostr.RelayConnect(ctx, relayURL)
-	if err != nil {
-		return fmt.Errorf("failed to connect to NWC relay: %w", err)
-	}
-	defer relay.Close()
-
-	// 3. Prepare NWC Encrypted Content (NIP-04)
-	// Current standard for NWC is specific.
-	// Request: kind 23194
-	// Content: {"method": "pay_invoice", "params": {"invoice": "..."}} encrypted
-
-	requestPayload := map[string]interface{}{
-		"method": "pay_invoice",
-		"params": map[string]interface{}{
-			"invoice": invoice,
-		},
-	}
-	jsonPayload, _ := json.Marshal(requestPayload)
-
-	// Compute shared secret
-	ss, err := nip04.ComputeSharedSecret(walletPubKey, secret)
-	if err != nil {
-		return fmt.Errorf("failed to compute shared secret: %w", err)
-	}
-
-	encryptedContent, err := nip04.Encrypt(string(jsonPayload), ss)
-	if err != nil {
-		return fmt.Errorf("failed to encrypt request: %w", err)
-	}
-
-	// 4. Publish Request
-	pk, _ := nostr.GetPublicKey(secret)
-	event := nostr.Event{
-		PubKey:    pk,
-		CreatedAt: nostr.Timestamp(time.Now().Unix()),
-		Kind:      23194,
-		Tags:      nostr.Tags{{"p", walletPubKey}},
-		Content:   encryptedContent,
-	}
-	if err := event.Sign(secret); err != nil {
-		return fmt.Errorf("failed to sign NWC request: %w", err)
-	}
-
-	if err := relay.Publish(ctx, event); err != nil {
-		return fmt.Errorf("failed to publish request: %w", err)
-	}
-
-	// NIP-47 flow: after publishing the request, the wallet responds
-	// with a kind 23195 event addressed back to us. We don't currently
-	// listen for it (would require a Subscribe + a goroutine + a
-	// timeout), so the honest answer is: we sent the request, but
-	// we don't know if the wallet paid. Tell the user that.
-	fmt.Println("NWC request sent. Note: hoot does not currently listen for the wallet's response (kind 23195), so this only confirms the relay accepted the request, not that the payment was made.")
-	fmt.Println("Check your wallet's transaction history to confirm the payment went through.")
-	return nil
-}
-
-// NWC Helpers
-
-// validateNWCURI ensures the string has the structure of a NIP-47
-// NWC connection string before we save it to disk. Without this,
-// `hoot -nwc garbage` silently writes garbage to nwc.txt and only
-// fails later when the user tries to tip (with a less-actionable
-// error). The check is intentionally permissive — any future
-// NWC-extension fields will pass through unchanged — but it rejects
-// the obviously-wrong cases (empty, wrong scheme, missing required
-// fields).
-func validateNWCURI(uri string) error {
-	if uri == "" {
-		return fmt.Errorf("NWC URI must not be empty")
-	}
-	u, err := url.Parse(uri)
-	if err != nil {
-		return fmt.Errorf("NWC URI is not a valid URL: %w", err)
-	}
-	if u.Scheme != "nostr+walletconnect" {
-		return fmt.Errorf("NWC URI scheme must be nostr+walletconnect, got %q", u.Scheme)
-	}
-	if u.Hostname() == "" {
-		return fmt.Errorf("NWC URI missing wallet pubkey in authority")
-	}
-	if u.Query().Get("relay") == "" {
-		return fmt.Errorf("NWC URI missing required ?relay= parameter")
-	}
-	if u.Query().Get("secret") == "" {
-		return fmt.Errorf("NWC URI missing required ?secret= parameter")
-	}
-	return nil
-}
-
-func saveNWCURI(uri string) error {
-	if err := validateNWCURI(uri); err != nil {
-		return err
-	}
-	configDir := getConfigDir()
-	if err := os.MkdirAll(configDir, 0700); err != nil {
-		return err
-	}
-	path := filepath.Join(configDir, "nwc.txt")
-	return os.WriteFile(path, []byte(uri), 0600)
-}
-
-func getNWCURI() (string, error) {
-	configDir := getConfigDir()
-	path := filepath.Join(configDir, "nwc.txt")
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return "", err
-	}
-	return strings.TrimSpace(string(data)), nil
-}
-
-// resolveLud16 fetches the callback from a Lightning Address (username@domain).
-// Uses an http.Client with a 10s total timeout so a hung LNURL endpoint
-// can't freeze `hoot -tip` forever (matches the LUD-16 spec recommendation
-// for lnurlp responses).
-func resolveLud16(lud16 string) (string, error) {
-	parts := strings.Split(lud16, "@")
-	if len(parts) != 2 {
-		return "", fmt.Errorf("invalid lightning address format")
-	}
-	username, domain := parts[0], parts[1]
-	url := fmt.Sprintf("https://%s/.well-known/lnurlp/%s", domain, username)
-
-	client := &http.Client{Timeout: 10 * time.Second}
-	resp, err := client.Get(url)
-	if err != nil {
-		return "", err
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("lnurl request failed: %s", resp.Status)
-	}
-
-	var data struct {
-		Callback string `json:"callback"`
-	}
-	if err := json.NewDecoder(resp.Body).Decode(&data); err != nil {
-		return "", err
-	}
-	return data.Callback, nil
-}
-
-func fetchLightningInvoice(callback string, amountSats int64) (string, error) {
-	// Amount in millisats
-	amountMillisats := amountSats * 1000
-
-	// Check if callback already has query params
-	separator := "?"
-	if strings.Contains(callback, "?") {
-		separator = "&"
-	}
-
-	url := fmt.Sprintf("%s%samount=%d", callback, separator, amountMillisats)
-	client := &http.Client{Timeout: 10 * time.Second}
-	resp, err := client.Get(url)
-	if err != nil {
-		return "", err
-	}
-	defer resp.Body.Close()
-
-	var data struct {
-		PR string `json:"pr"`
-	}
-	if err := json.NewDecoder(resp.Body).Decode(&data); err != nil {
-		return "", err
-	}
-	if data.PR == "" {
-		return "", fmt.Errorf("no payment request in response")
-	}
-	return data.PR, nil
-}
-
-func extractLud16(pubKey string, relays []string) (string, error) {
-	filter := nostr.Filter{
-		Authors: []string{pubKey},
-		Kinds:   []int{0},
-		Limit:   1,
-	}
-
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-
-	var profileEvent *nostr.Event
-
-	// Poor man's pool query for single event
-	for _, url := range relays {
-		relay, err := nostr.RelayConnect(ctx, url)
-		if err != nil {
-			continue
-		}
-
-		ch, err := relay.QueryEvents(ctx, filter)
-		if err != nil {
-			relay.Close()
-			continue
-		}
-
-		for ev := range ch {
-			profileEvent = ev
-			break
-		}
-		relay.Close()
-		if profileEvent != nil {
-			break
-		}
-	}
-
-	if profileEvent == nil {
-		return "", fmt.Errorf("profile not found")
-	}
-
-	var profile struct {
-		LUD16 string `json:"lud16"`
-	}
-	if err := json.Unmarshal([]byte(profileEvent.Content), &profile); err != nil {
-		return "", err
-	}
-	if profile.LUD16 == "" {
-		return "", fmt.Errorf("user has no lightning address (lud16)")
-	}
-	return profile.LUD16, nil
-}
-
 func main() {
 	// Initialize cache for improved performance
 	configDir := getConfigDir()
@@ -1624,6 +1370,15 @@ func main() {
 				return sk, profile.PublicKey, nil
 			},
 			OnDeleteProfile: DeleteProfile,
+			OnTip: func(target string, sats int64) (string, error) {
+				ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+				defer cancel()
+				res, err := tipUser(ctx, target, sats, nil)
+				if err != nil {
+					return "", err
+				}
+				return res.String(), nil
+			},
 			OnLogout: func() {
 				endRemoteSession()
 				localPrivateKey = ""
@@ -1647,57 +1402,15 @@ func main() {
 	// Handle Tipping
 	if *tipPtr > 0 {
 		if *tipUserPtr == "" {
-			log.Fatalf("Please specify a user to tip with -user")
+			log.Fatalf("Please specify who to tip with -user (lightning address, npub or hex pubkey)")
 		}
-
-		target := *tipUserPtr
-		var hexPubKey string
-		var lud16 string
-
-		// Check if it is a lightning address
-		if strings.Contains(target, "@") {
-			lud16 = target
-		} else {
-			// Assume it's a pubkey (npub or hex)
-			if strings.HasPrefix(target, "npub") {
-				_, decoded, err := nip19.Decode(target)
-				if err != nil {
-					log.Fatalf("Invalid npub: %v", err)
-				}
-				hexPubKey = decoded.(string)
-			} else {
-				hexPubKey = target
-			}
-
-			// Resolve LUD16 from profile
-			fmt.Println("Resolving Lightning Address from Nostr profile...")
-			relays := getRelayList()
-			l, err := extractLud16(hexPubKey, relays)
-			if err != nil {
-				log.Fatalf("Could not find lightning address for user: %v", err)
-			}
-			lud16 = l
-		}
-
-		fmt.Printf("Found lightning address: %s\n", lud16)
-
-		// Resolve Callback
-		callback, err := resolveLud16(lud16)
+		res, err := tipUser(context.Background(), *tipUserPtr, *tipPtr, func(s string) { fmt.Println(s) })
 		if err != nil {
-			log.Fatalf("Failed to resolve lightning address: %v", err)
+			log.Fatalf("Tip failed: %v", err)
 		}
-
-		// Fetch Invoice
-		fmt.Printf("Fetching invoice for %d sats...\n", *tipPtr)
-		invoice, err := fetchLightningInvoice(callback, *tipPtr)
-		if err != nil {
-			log.Fatalf("Failed to fetch invoice: %v", err)
-		}
-
-		// Pay
-		fmt.Println("Paying invoice via NWC...")
-		if err := payInvoiceNWC(invoice); err != nil {
-			log.Fatalf("Payment failed: %v", err)
+		fmt.Println(res.String())
+		if res.Preimage != "" {
+			fmt.Printf("Preimage: %s\n", res.Preimage)
 		}
 		return
 	}

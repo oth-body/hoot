@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+- Tipping works from the TUI: **[t] Tip someone** now takes a recipient (Lightning address, npub or hex pubkey) and an amount, and pays in the background. Previously Enter on that screen did nothing.
+- Tipping now waits for the wallet's NIP-47 response (up to 60s) and reports paid (with fee and preimage), a wallet error (e.g. insufficient balance), or "unconfirmed". It used to stop after the relay accepted the request.
+- Tipping refuses an invoice whose amount doesn't match what was requested, respects the recipient's LNURL min/max amounts, and reports LNURL `ERROR` reasons.
+- `hoot -nwc` now rejects connection strings whose wallet pubkey or secret isn't 64-char hex (they could never pay), and accepts the `nostr+walletconnect:<pubkey>` form without `//`.
+- Build: CI, tests and GoReleaser build the package (`.`) instead of only `hoot.go`, so code in other files of the main package is included.
+- Tests: `TestNWCParsing` no longer overwrites the developer's real `nwc.txt`.
 - Security: bumped `golang.org/x/crypto` v0.33.0 → v0.58.0 and `golang.org/x/sys` v0.37.0 → v0.49.0 (plus `term`, `text`, `net`, `sync`), clearing the known advisories govulncheck reported against those versions (GO-2025-3487, GO-2025-4116, GO-2025-4134/4135, GO-2026-5005…5033, GO-2026-6303, GO-2026-6354/6355). None were reachable from hoot's code, but they were all in the build.
 - Hoot now requires **Go 1.26** (x/crypto ≥ v0.56 needs it; Go 1.24 no longer receives security fixes). `toolchain go1.26.10` pins a patched compiler for builds and releases.
 - CI: new `vulncheck` job. `govulncheck ./...` (reachable code) fails the build; a module-wide scan posts its findings as a check annotation.

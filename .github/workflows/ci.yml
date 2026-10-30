@@ -62,7 +62,7 @@ jobs:
           if [ "$GOOS" = "windows" ]; then
             ext=".exe"
           fi
-          go build -ldflags="-s -w" -o hoot${ext} hoot.go
+          go build -ldflags="-s -w" -o hoot${ext} .
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4

@@ -23,7 +23,7 @@ func TestMain(m *testing.M) {
 		binaryPath = filepath.Join(os.TempDir(), "hoot-test")
 	}
 
-	cmd := exec.Command("go", "build", "-o", binaryPath, "hoot.go")
+	cmd := exec.Command("go", "build", "-o", binaryPath, ".")
 	if err := cmd.Run(); err != nil {
 		fmt.Fprintf(os.Stderr, "failed to build binary: %v\n", err)
 		os.Exit(1)
@@ -276,8 +276,14 @@ func TestNWCParsing(t *testing.T) {
 	// the bug (saveNWCURI didn't validate). The fix added a struct-
 	// ural check; this test now uses a valid one to confirm the save
 	// path still works end-to-end.
-	validURI := "nostr+walletconnect://pubkey123?relay=wss%3A%2F%2Frelay.example.com&secret=hexsecret"
-	output, err := runHoot(t, nil, "-nwc", validURI)
+	//
+	// Runs against a temp config dir: with a nil env this used to overwrite
+	// the developer's real nwc.txt with a fake wallet.
+	tempDir := t.TempDir()
+	env := map[string]string{"HOME": tempDir, "XDG_CONFIG_HOME": tempDir, "APPDATA": tempDir}
+	validURI := "nostr+walletconnect://" + strings.Repeat("a1", 32) +
+		"?relay=wss%3A%2F%2Frelay.example.com&secret=" + strings.Repeat("b2", 32)
+	output, err := runHoot(t, env, "-nwc", validURI)
 	if err != nil {
 		t.Fatalf("Failed to run -nwc: %v", err)
 	}

@@ -187,6 +187,10 @@ hoot -tip 100 -user <hex-pubkey>
 hoot -tip 100 -user alice@getalby.com
 ```
 
+In the TUI, choose **[t] Tip someone**, enter the recipient, then the amount.
+
+Hoot waits up to 60 seconds for your wallet to confirm the payment and shows the result (and the payment preimage on the CLI). If the wallet doesn't answer in time, the payment may still go through, so check your wallet before retrying. Before paying, hoot checks that the invoice it got is for exactly the amount you asked for.
+
 ---
 
 ### NIP-89 App Handlers

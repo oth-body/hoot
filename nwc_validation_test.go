@@ -10,6 +10,8 @@ import (
 // wrote garbage to disk and only failed later (less actionable error).
 // With this, the user gets immediate feedback on a malformed URI.
 func TestValidateNWCURI(t *testing.T) {
+	hexA := strings.Repeat("a1", 32)
+	hexB := strings.Repeat("b2", 32)
 	tests := []struct {
 		name      string
 		uri       string
@@ -48,11 +50,27 @@ func TestValidateNWCURI(t *testing.T) {
 		},
 		{
 			name: "valid NWC URI is accepted",
-			uri:  "nostr+walletconnect://pubkey123?relay=wss%3A%2F%2Frelay.example.com&secret=hexsecret",
+			uri:  "nostr+walletconnect://" + hexA + "?relay=wss%3A%2F%2Frelay.example.com&secret=" + hexB,
 		},
 		{
 			name: "valid NWC URI with extra params is accepted",
-			uri:  "nostr+walletconnect://pubkey123?relay=wss%3A%2F%2Frelay.example.com&secret=hexsecret&lud16=alice%40example.com",
+			uri:  "nostr+walletconnect://" + hexA + "?relay=wss%3A%2F%2Frelay.example.com&secret=" + hexB + "&lud16=alice%40example.com",
+		},
+		{
+			name: "opaque form without // is accepted",
+			uri:  "nostr+walletconnect:" + hexA + "?relay=wss%3A%2F%2Frelay.example.com&secret=" + hexB,
+		},
+		{
+			name:      "non-hex wallet pubkey is rejected",
+			uri:       "nostr+walletconnect://pubkey123?relay=wss://r&secret=" + hexB,
+			wantError: true,
+			wantMsg:   "wallet pubkey is not 64-char hex",
+		},
+		{
+			name:      "non-hex secret is rejected",
+			uri:       "nostr+walletconnect://" + hexA + "?relay=wss://r&secret=hexsecret",
+			wantError: true,
+			wantMsg:   "secret is not 64-char hex",
 		},
 	}
 
