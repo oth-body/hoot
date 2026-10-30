@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+- TUI: the home menu's letter shortcuts work: **p**ost, **f**eed, **d**Ms, r**e**plies, **t**ip, **r**elays, **s**witch profile, **q**uit. Only `q` used to.
+- TUI: text fields get every letter. Keys used to be matched as shortcuts first: typing `j`/`k` moved the cursor mid-form (breaking profile creation if your name or password contained them), and typing `r` in a password field **deleted the key stored with `hoot -s`**. The hidden `r` = "delete key file" binding on the login screen is gone.
+- TUI: the home screen shows your full npub so you can copy it.
+- CLI: new `-npub` flag prints your npub. TUI profiles don't need a password for it. Password prompts and progress spinners now go to stderr, so `NPUB=$(hoot -npub)` captures only the npub.
 - Tipping works from the TUI: **[t] Tip someone** now takes a recipient (Lightning address, npub or hex pubkey) and an amount, and pays in the background. Previously Enter on that screen did nothing.
 - Tipping now waits for the wallet's NIP-47 response (up to 60s) and reports paid (with fee and preimage), a wallet error (e.g. insufficient balance), or "unconfirmed". It used to stop after the relay accepted the request.
 - Tipping refuses an invoice whose amount doesn't match what was requested, respects the recipient's LNURL min/max amounts, and reports LNURL `ERROR` reasons.

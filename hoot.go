@@ -136,7 +136,7 @@ func withLoading(message string, fn func() error) error {
 			case <-done:
 				return
 			default:
-				fmt.Printf("\r%s %c", message, spinner[i%len(spinner)])
+				fmt.Fprintf(os.Stderr, "\r%s %c", message, spinner[i%len(spinner)])
 				i++
 				time.Sleep(100 * time.Millisecond)
 			}
@@ -145,7 +145,7 @@ func withLoading(message string, fn func() error) error {
 	err := fn()
 	done <- true
 	// Clear the loading line
-	fmt.Printf("\r%s done\n", message)
+	fmt.Fprintf(os.Stderr, "\r%s done\n", message)
 	return err
 }
 
@@ -604,6 +604,20 @@ func defaultProfileID() string {
 		for id := range store.Profiles {
 			return id
 		}
+	}
+	return ""
+}
+
+// profilePublicKey returns the stored hex pubkey of a profile, or "" if the
+// profile doesn't exist or has none yet (migrated legacy profiles get theirs
+// on first unlock).
+func profilePublicKey(id string) string {
+	store, err := LoadProfiles()
+	if err != nil {
+		return ""
+	}
+	if p, ok := store.Profiles[id]; ok {
+		return p.PublicKey
 	}
 	return ""
 }
@@ -1161,6 +1175,7 @@ func main() {
 	dmsPtr := flag.Bool("dms", false, "View direct messages")
 	repliesPtr := flag.String("replies", "", "View replies/reactions for a specific event ID")
 	versionPtr := flag.Bool("version", false, "Display the version")
+	npubPtr := flag.Bool("npub", false, "Print your public key (npub) and exit")
 
 	// NWC / Tipping flags
 	nwcPtr := flag.String("nwc", "", "Set NWC URI for tipping")
@@ -1428,6 +1443,25 @@ func main() {
 		keyExists = cliProfileID != ""
 	}
 
+	// -npub: profiles store the public key in the clear, so no password
+	// is needed for them. A legacy key file only has the encrypted private
+	// key, so that case falls through to the normal unlock below.
+	if *npubPtr {
+		if !keyExists {
+			log.Fatalf("No key stored: add a profile in the TUI, or run: hoot -s -k <nsec>")
+		}
+		if cliProfileID != "" {
+			if pk := profilePublicKey(cliProfileID); pk != "" {
+				npub, err := nip19.EncodePublicKey(pk)
+				if err != nil {
+					log.Fatalf("Invalid stored public key: %v", err)
+				}
+				fmt.Println(npub)
+				return
+			}
+		}
+	}
+
 	// Interactive Login if no key found and no store flag
 	// Use flag.NFlag() == 0 to assume interactive mode if no flags provided
 	if !keyExists && !*storePtr && *messagePtr == "" && *updatePtr == "" && !*profilePtr && !*listPtr && *nwcPtr == "" && *tipPtr == 0 {
@@ -1447,12 +1481,14 @@ func main() {
 	password := os.Getenv("HOOT_PASSWORD")
 	if password == "" {
 		// Read encryption password without echoing
-		fmt.Print("Enter encryption password: ")
+		// Prompts and progress go to stderr so stdout stays clean for
+		// scripts, e.g. NPUB=$(hoot -npub).
+		fmt.Fprint(os.Stderr, "Enter encryption password: ")
 		bytePassword, err := term.ReadPassword(int(syscall.Stdin))
 		if err != nil {
 			log.Fatalf("Error reading password: %v", err)
 		}
-		fmt.Println("") // newline after password input
+		fmt.Fprintln(os.Stderr) // newline after password input
 		password = string(bytePassword)
 	}
 
@@ -1493,6 +1529,12 @@ func main() {
 	pk, err := nostr.GetPublicKey(sk)
 	if err != nil {
 		log.Fatalf("Failed to derive public key: %v", err)
+	}
+
+	if *npubPtr {
+		npub, _ := nip19.EncodePublicKey(pk)
+		fmt.Println(npub)
+		return
 	}
 
 	// Handle NIP-89 register-handler command

@@ -3,6 +3,7 @@ package main
 import (
 	"flag"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -375,5 +376,62 @@ func TestDecryptKeyRejectsTruncatedCiphertext(t *testing.T) {
 	sk.EncryptedKey = sk.EncryptedKey[:10]
 	if _, err := decryptKey(sk, []byte("pw")); err == nil {
 		t.Fatal("expected error, not a panic or success")
+	}
+}
+
+// runMainCapture runs main() in-process with args and returns its stdout.
+func runMainCapture(t *testing.T, args ...string) string {
+	t.Helper()
+	oldArgs, oldFlags, oldStdout := os.Args, flag.CommandLine, os.Stdout
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	os.Args = append([]string{"hoot"}, args...)
+	flag.CommandLine = flag.NewFlagSet("hoot", flag.ContinueOnError)
+	os.Stdout = w
+	defer func() { os.Args, flag.CommandLine, os.Stdout = oldArgs, oldFlags, oldStdout }()
+	done := make(chan string)
+	go func() {
+		b, _ := io.ReadAll(r)
+		done <- string(b)
+	}()
+	main()
+	w.Close()
+	return <-done
+}
+
+// -npub prints just the npub, and for TUI profiles doesn't need the
+// password (the pubkey is stored unencrypted). With no HOOT_PASSWORD and no
+// TTY, reaching the password prompt would log.Fatal and kill the test.
+func TestNpubFlagWithProfileNeedsNoPassword(t *testing.T) {
+	isolate(t)
+	t.Setenv("HOOT_PASSWORD", "")
+	sk := nostr.GeneratePrivateKey()
+	pk, _ := nostr.GetPublicKey(sk)
+	nsec, _ := nip19.EncodePrivateKey(sk)
+	if _, err := AddProfile("main", nsec, "pw"); err != nil {
+		t.Fatal(err)
+	}
+	want, _ := nip19.EncodePublicKey(pk)
+	if got := runMainCapture(t, "-npub"); got != want+"\n" {
+		t.Fatalf("stdout = %q, want %q", got, want+"\n")
+	}
+}
+
+// With a legacy hoot -s key the pubkey isn't stored, so the key is unlocked;
+// stdout must still contain only the npub (prompts/progress go to stderr).
+func TestNpubFlagWithLegacyKey(t *testing.T) {
+	isolate(t)
+	sk := nostr.GeneratePrivateKey()
+	pk, _ := nostr.GetPublicKey(sk)
+	nsec, _ := nip19.EncodePrivateKey(sk)
+	if err := saveKey(nsec, []byte("pw")); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("HOOT_PASSWORD", "pw")
+	want, _ := nip19.EncodePublicKey(pk)
+	if got := runMainCapture(t, "-npub"); got != want+"\n" {
+		t.Fatalf("stdout = %q, want %q", got, want+"\n")
 	}
 }
