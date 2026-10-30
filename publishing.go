@@ -17,7 +17,8 @@ func publishPostTUI(content string) error {
 	event.Kind = 1
 	event.Content = content
 	event.CreatedAt = nostr.Now()
-	event.Tags = nostr.Tags{}
+	// #hashtags become "t" tags, like `hoot -m` (the TUI didn't tag them).
+	event.Tags = append(nostr.Tags{}, hashtagTags(content)...)
 
 	// If NIP-46 session is active, use it
 	if nip46Session != nil {

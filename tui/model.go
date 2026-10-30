@@ -54,9 +54,12 @@ var (
 
 // FeedPost represents a single post in the feed
 type FeedPost struct {
-	Author    string
-	Content   string
-	CreatedAt string
+	ID         string // hex event ID ("" for synthetic entries)
+	Kind       int
+	Author     string // hex pubkey
+	AuthorName string // display name from the author's profile, if known
+	Content    string
+	CreatedAt  string
 }
 
 // ProfileInfo represents a profile for display in the TUI
@@ -102,10 +105,13 @@ type Model struct {
 	loadGen int  // bumped per load; stale results are dropped
 	posting bool // a post is being published
 
-	// Feed state
-	feedPosts   []FeedPost
-	feedLoading bool
-	feedScroll  int
+	// Feed state (the *Scroll fields are the selected index)
+	feedFollowing bool      // following feed instead of global
+	threadPost    *FeedPost // post whose replies are shown (opened from a list)
+	threadFrom    Screen    // screen to return to from the thread
+	feedPosts     []FeedPost
+	feedLoading   bool
+	feedScroll    int
 
 	// DMs state
 	dmPosts   []FeedPost
@@ -129,18 +135,20 @@ type Model struct {
 	selectedRelay int  // index of selected relay
 
 	// Callbacks
-	onLogin       func(nsec string, password string, save bool) (string, error) // returns pubkey
-	onPost        func(message string) error
-	onLoadKey     func(password string) (privateKey string, pubkey string, err error)
-	onResetKey    func() error
-	onLoadFeed    func() ([]FeedPost, error)
-	onLoadDMs     func(privateKey string) ([]FeedPost, error)
-	onLoadReplies func(eventID string) ([]FeedPost, error)
-	onInitQR      func() (string, error)
-	onCheckQR     func() (string, *nip46.ProfileMetadata, error)
-	onLoadRelays  func() ([]string, error)
-	onSaveRelays  func(relays []string) error
-	hasKey        func() bool
+	onLogin    func(nsec string, password string, save bool) (string, error) // returns pubkey
+	onPost     func(message string) error
+	onLoadKey  func(password string) (privateKey string, pubkey string, err error)
+	onResetKey func() error
+	onLoadFeed func() ([]FeedPost, error)
+	// onLoadFollowingFeed loads posts from people the user follows.
+	onLoadFollowingFeed func() ([]FeedPost, error)
+	onLoadDMs           func(privateKey string) ([]FeedPost, error)
+	onLoadReplies       func(eventID string) ([]FeedPost, error)
+	onInitQR            func() (string, error)
+	onCheckQR           func() (string, *nip46.ProfileMetadata, error)
+	onLoadRelays        func() ([]string, error)
+	onSaveRelays        func(relays []string) error
+	hasKey              func() bool
 
 	// Profile callbacks
 	onListProfiles  func() ([]ProfileInfo, string, error) // returns profiles + lastUsedID
@@ -271,6 +279,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return nm, nil
 			}
 		}
+		if m.screen == ScreenFeed && key == "g" && m.onLoadFollowingFeed != nil {
+			m.feedFollowing = !m.feedFollowing
+			return m, m.reloadFeed()
+		}
 
 		switch key {
 		case "ctrl+c":
@@ -311,6 +323,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				// there is no Home screen to return to.
 				m.screen = ScreenLogin
 				m.cursor = 0
+				m.message = ""
+				return m, nil
+			}
+			if m.screen == ScreenReplies && m.threadPost != nil {
+				// Back from a thread to the list it was opened from.
+				m.threadPost = nil
+				m.replyPosts = nil
+				m.screen = m.threadFrom
 				m.message = ""
 				return m, nil
 			}
@@ -389,15 +409,15 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "down", "j":
 			switch m.screen {
 			case ScreenFeed:
-				if m.feedScroll < len(m.feedPosts)-4 {
+				if m.feedScroll < len(m.feedPosts)-1 {
 					m.feedScroll++
 				}
 			case ScreenDMs:
-				if m.dmScroll < len(m.dmPosts)-4 {
+				if m.dmScroll < len(m.dmPosts)-1 {
 					m.dmScroll++
 				}
 			case ScreenReplies:
-				if m.replyScroll < len(m.replyPosts)-4 {
+				if m.replyScroll < len(m.replyPosts)-1 {
 					m.replyScroll++
 				}
 			case ScreenRelays:
@@ -541,7 +561,18 @@ func (m Model) handleEnter() (tea.Model, tea.Cmd) {
 	case ScreenPost:
 		return m.handlePostEnter()
 	case ScreenReplies:
+		if m.threadPost != nil {
+			if m.replyScroll < len(m.replyPosts) {
+				return m, m.openThread(m.replyPosts[m.replyScroll], m.threadFrom)
+			}
+			return m, nil
+		}
 		return m.handleRepliesEnter()
+	case ScreenFeed:
+		if m.feedScroll < len(m.feedPosts) {
+			return m, m.openThread(m.feedPosts[m.feedScroll], ScreenFeed)
+		}
+		return m, nil
 	case ScreenRelays:
 		return m.handleRelaysEnter()
 	case ScreenTip:

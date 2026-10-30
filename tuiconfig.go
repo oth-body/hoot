@@ -67,10 +67,11 @@ func tuiConfig() tui.Config {
 			useLocalKey(sk)
 			return pk, nil
 		},
-		OnPost:        publishPostTUI,
-		OnLoadFeed:    getFeedPosts,
-		OnLoadDMs:     getDMs,
-		OnLoadReplies: getReactions,
+		OnPost:              publishPostTUI,
+		OnLoadFeed:          func() ([]tui.FeedPost, error) { return getFeedPosts(false) },
+		OnLoadFollowingFeed: func() ([]tui.FeedPost, error) { return getFeedPosts(true) },
+		OnLoadDMs:           getDMs,
+		OnLoadReplies:       getReactions,
 		OnLoadRelays: func() ([]string, error) {
 			return loadRelays() // Uses existing helper
 		},

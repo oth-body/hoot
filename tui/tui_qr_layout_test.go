@@ -5,8 +5,9 @@ import (
 	"strings"
 	"testing"
 
-	tea "github.com/charmbracelet/bubbletea"
 	"hoot/nip46"
+
+	tea "github.com/charmbracelet/bubbletea"
 )
 
 // TestQRViewLayout dumps the full View() at every reasonable size and

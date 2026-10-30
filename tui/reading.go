@@ -6,6 +6,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/nbd-wtf/go-nostr/nip19"
 )
 
 func (m Model) handleRepliesEnter() (tea.Model, tea.Cmd) {
@@ -27,179 +28,159 @@ func (m Model) handleRepliesEnter() (tea.Model, tea.Cmd) {
 	return m, m.startLoad(ScreenReplies, func() ([]FeedPost, error) { return load(eventID) })
 }
 
-func (m Model) viewFeed() string {
-	var b strings.Builder
-
-	b.WriteString(titleStyle.Render("📜 Your Feed"))
-	b.WriteString("\n\n")
-
-	if m.feedLoading {
-		b.WriteString(menuStyle.Render(m.spinner.View() + " Loading feed from your relays..."))
-		return b.String()
+// authorLabel is the display name for a post's author: their profile name
+// if known, otherwise a shortened npub.
+func authorLabel(p FeedPost) string {
+	if p.AuthorName != "" {
+		return p.AuthorName
 	}
-
-	if len(m.feedPosts) == 0 {
-		b.WriteString(menuStyle.Render("No posts yet."))
-		return b.String()
+	if n := shortNpub(p.Author); n != "" {
+		return n
 	}
+	return "unknown"
+}
 
-	postStyle := lipgloss.NewStyle().
-		Border(lipgloss.RoundedBorder()).
-		Padding(0, 1).
-		MarginBottom(1).
-		Width(60)
-
-	authorStyle := lipgloss.NewStyle().
-		Foreground(lipgloss.Color("205")).
-		Bold(true)
-
-	timeStyle := lipgloss.NewStyle().
-		Foreground(lipgloss.Color("241"))
-
-	// Show up to 4 posts based on scroll
-	start := m.feedScroll
-	end := start + 4
-	if end > len(m.feedPosts) {
-		end = len(m.feedPosts)
+// truncateRunes shortens s to max runes (byte slicing could cut a
+// multi-byte character in half).
+func truncateRunes(s string, max int) string {
+	r := []rune(s)
+	if len(r) <= max {
+		return s
 	}
+	return string(r[:max-1]) + "…"
+}
 
-	for _, post := range m.feedPosts[start:end] {
-		authorDisplay := post.Author
-		if len(authorDisplay) > 16 {
-			authorDisplay = authorDisplay[:16] + "..."
+const listPage = 4 // posts shown at once
+
+// renderPostList draws up to listPage posts around the selected one, the
+// selected post highlighted with its note1 ID underneath (for copying).
+func renderPostList(b *strings.Builder, posts []FeedPost, sel int, noun string) {
+	postStyle := lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).Padding(0, 1).Width(64)
+	selStyle := postStyle.BorderForeground(lipgloss.Color("205"))
+	authorStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("205")).Bold(true)
+	dim := lipgloss.NewStyle().Foreground(lipgloss.Color("241"))
+
+	start := sel
+	if start > len(posts)-listPage {
+		start = len(posts) - listPage
+	}
+	if start < 0 {
+		start = 0
+	}
+	end := start + listPage
+	if end > len(posts) {
+		end = len(posts)
+	}
+	for i := start; i < end; i++ {
+		p := posts[i]
+		header := authorStyle.Render(authorLabel(p)) + " " + dim.Render(p.CreatedAt)
+		body := header + "\n" + truncateRunes(p.Content, 280)
+		if i == sel {
+			b.WriteString(selStyle.Render(body))
+			b.WriteString("\n")
+			if id := noteID(p.ID); id != "" {
+				b.WriteString(dim.Render("  " + id))
+				b.WriteString("\n")
+			}
+		} else {
+			b.WriteString(postStyle.Render(body))
+			b.WriteString("\n")
 		}
-		header := authorStyle.Render(authorDisplay) + " " + timeStyle.Render(post.CreatedAt)
-		content := post.Content
-		if len(content) > 200 {
-			content = content[:200] + "..."
-		}
-		b.WriteString(postStyle.Render(header + "\n" + content))
+	}
+	if len(posts) > listPage {
+		b.WriteString(menuStyle.Render(fmt.Sprintf("%d of %d %s", sel+1, len(posts), noun)))
 		b.WriteString("\n")
 	}
+}
 
-	if len(m.feedPosts) > 4 {
-		b.WriteString(menuStyle.Render(fmt.Sprintf("Showing %d-%d of %d posts (↑/↓ to scroll)", start+1, end, len(m.feedPosts))))
+func (m Model) viewFeed() string {
+	var b strings.Builder
+	title := "📜 Global feed"
+	if m.feedFollowing {
+		title = "📜 Following"
 	}
+	b.WriteString(titleStyle.Render(title))
+	b.WriteString("\n\n")
 
+	switch {
+	case m.feedLoading:
+		b.WriteString(menuStyle.Render(m.spinner.View() + " Loading feed from your relays..."))
+	case len(m.feedPosts) == 0:
+		b.WriteString(menuStyle.Render("No posts yet."))
+	default:
+		renderPostList(&b, m.feedPosts, m.feedScroll, "posts")
+	}
+	b.WriteString("\n")
+	other := "following"
+	if m.feedFollowing {
+		other = "global"
+	}
+	help := "↑/↓ select · Enter open thread · g " + other
+	if m.feedFollowing && m.onLoadFollowingFeed == nil {
+		help = "↑/↓ select · Enter open thread"
+	}
+	b.WriteString(menuStyle.Render(help))
 	return b.String()
 }
 
 func (m Model) viewDMs() string {
 	var b strings.Builder
-
 	b.WriteString(titleStyle.Render("🔒 Your Direct Messages"))
 	b.WriteString("\n\n")
 
-	if m.dmLoading {
+	switch {
+	case m.dmLoading:
 		b.WriteString(menuStyle.Render(m.spinner.View() + " Loading DMs from your relays..."))
-		return b.String()
-	}
-
-	if len(m.dmPosts) == 0 {
+	case len(m.dmPosts) == 0:
 		b.WriteString(menuStyle.Render("No direct messages yet."))
-		return b.String()
+	default:
+		renderPostList(&b, m.dmPosts, m.dmScroll, "messages")
 	}
-
-	postStyle := lipgloss.NewStyle().
-		Border(lipgloss.RoundedBorder()).
-		Padding(0, 1).
-		MarginBottom(1).
-		Width(60)
-
-	authorStyle := lipgloss.NewStyle().
-		Foreground(lipgloss.Color("205")).
-		Bold(true)
-
-	timeStyle := lipgloss.NewStyle().
-		Foreground(lipgloss.Color("241"))
-
-	// Show up to 4 posts based on scroll
-	start := m.dmScroll
-	end := start + 4
-	if end > len(m.dmPosts) {
-		end = len(m.dmPosts)
-	}
-
-	for _, post := range m.dmPosts[start:end] {
-		authorDisplay := post.Author
-		if len(authorDisplay) > 16 {
-			authorDisplay = authorDisplay[:16] + "..."
-		}
-		header := authorStyle.Render(authorDisplay) + " " + timeStyle.Render(post.CreatedAt)
-		content := post.Content
-		if len(content) > 200 {
-			content = content[:200] + "..."
-		}
-		b.WriteString(postStyle.Render(header + "\n" + content))
-		b.WriteString("\n")
-	}
-
-	if len(m.dmPosts) > 4 {
-		b.WriteString(menuStyle.Render(fmt.Sprintf("Showing %d-%d of %d messages (↑/↓ to scroll)", start+1, end, len(m.dmPosts))))
-	}
-
 	return b.String()
 }
 
 func (m Model) viewReplies() string {
 	var b strings.Builder
-
 	b.WriteString(titleStyle.Render("💬 Replies & Reactions"))
 	b.WriteString("\n\n")
 
-	if m.replyLoading {
+	if m.threadPost != nil {
+		dim := lipgloss.NewStyle().Foreground(lipgloss.Color("241"))
+		b.WriteString(lipgloss.NewStyle().Bold(true).Render(authorLabel(*m.threadPost)) + " " + dim.Render(m.threadPost.CreatedAt))
+		b.WriteString("\n")
+		b.WriteString(truncateRunes(m.threadPost.Content, 400))
+		b.WriteString("\n\n")
+	}
+
+	switch {
+	case m.replyLoading:
 		b.WriteString(menuStyle.Render(m.spinner.View() + " Loading replies from your relays..."))
 		return b.String()
+	case len(m.replyPosts) == 0 && m.threadPost != nil:
+		b.WriteString(menuStyle.Render("No replies or reactions yet."))
+	case len(m.replyPosts) > 0:
+		renderPostList(&b, m.replyPosts, m.replyScroll, "replies & reactions")
 	}
 
-	if len(m.replyPosts) == 0 {
-		b.WriteString(menuStyle.Render("Enter an event ID to view replies/reactions"))
-		b.WriteString("\n\n")
-		b.WriteString(m.textInput.View())
+	b.WriteString("\n")
+	if m.threadPost != nil {
+		b.WriteString(menuStyle.Render("↑/↓ select · Enter open that thread · Esc back to feed"))
 		return b.String()
 	}
-
-	postStyle := lipgloss.NewStyle().
-		Border(lipgloss.RoundedBorder()).
-		Padding(0, 1).
-		MarginBottom(1).
-		Width(60)
-
-	authorStyle := lipgloss.NewStyle().
-		Foreground(lipgloss.Color("205")).
-		Bold(true)
-
-	timeStyle := lipgloss.NewStyle().
-		Foreground(lipgloss.Color("241"))
-
-	// Show up to 4 posts based on scroll
-	start := m.replyScroll
-	end := start + 4
-	if end > len(m.replyPosts) {
-		end = len(m.replyPosts)
-	}
-
-	for _, post := range m.replyPosts[start:end] {
-		authorDisplay := post.Author
-		if len(authorDisplay) > 16 {
-			authorDisplay = authorDisplay[:16] + "..."
-		}
-		header := authorStyle.Render(authorDisplay) + " " + timeStyle.Render(post.CreatedAt)
-		content := post.Content
-		if len(content) > 200 {
-			content = content[:200] + "..."
-		}
-		b.WriteString(postStyle.Render(header + "\n" + content))
-		b.WriteString("\n")
-	}
-
-	if len(m.replyPosts) > 4 {
-		b.WriteString(menuStyle.Render(fmt.Sprintf("Showing %d-%d of %d replies (↑/↓ to scroll)", start+1, end, len(m.replyPosts))))
-	}
-	b.WriteString("\n")
-	b.WriteString(menuStyle.Render("[Enter new event ID to view more replies]"))
+	b.WriteString(menuStyle.Render("Enter an event ID (hex, note1… or nevent1…):"))
 	b.WriteString("\n")
 	b.WriteString(m.textInput.View())
-
 	return b.String()
+}
+
+// noteID renders a hex event ID as note1…, or "" if it isn't one.
+func noteID(hexID string) string {
+	if hexID == "" {
+		return ""
+	}
+	id, err := nip19.EncodeNote(hexID)
+	if err != nil {
+		return ""
+	}
+	return id
 }

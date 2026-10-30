@@ -4,8 +4,9 @@ import (
 	"strings"
 	"testing"
 
-	tea "github.com/charmbracelet/bubbletea"
 	"hoot/nip46"
+
+	tea "github.com/charmbracelet/bubbletea"
 )
 
 // TestQRGeneratesAfterInitMessage verifies that the QR code renders correctly

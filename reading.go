@@ -37,6 +37,8 @@ const feedLimit = 20
 // eventToFeedPost converts a Nostr event to the TUI's display struct.
 func eventToFeedPost(ev *nostr.Event) tui.FeedPost {
 	return tui.FeedPost{
+		ID:        ev.ID,
+		Kind:      ev.Kind,
 		Author:    ev.PubKey,
 		Content:   ev.Content,
 		CreatedAt: time.Unix(int64(ev.CreatedAt), 0).Format("Jan 2 15:04"),
@@ -70,22 +72,48 @@ func queryRelays(ctx context.Context, relays []string, filters ...nostr.Filter) 
 	return events
 }
 
-// getFeedPosts returns the newest global kind-1 posts for TUI display.
+// maxFollowAuthors caps the authors filter for the following feed; relays
+// reject very large filters.
+const maxFollowAuthors = 500
+
+// errNoContacts is returned for the following feed when the user has no
+// contact list.
+var errNoContacts = fmt.Errorf("you don't follow anyone yet (no contact list found); press g for the global feed")
+
+// getFeedPosts returns the newest kind-1 posts, newest first, with author
+// names: from everyone (global) or from the people the user follows.
 //
 // Relays are queried first; the local cache is only a fallback for when no
-// relay answers. Previously cached events were inserted first and the loop
-// stopped at 20 posts, so once the cache held 20 events the feed showed the
-// same stale posts for the full 24h TTL and never displayed anything new.
-func getFeedPosts() ([]tui.FeedPost, error) {
+// relay answers (global feed only).
+func getFeedPosts(following bool) ([]tui.FeedPost, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	events := queryRelays(ctx, getRelayList(), nostr.Filter{Kinds: []int{1}, Limit: feedLimit})
+	filter := nostr.Filter{Kinds: []int{1}, Limit: feedLimit}
+	if following {
+		me := currentPubKey()
+		if me == "" {
+			return nil, fmt.Errorf("not signed in")
+		}
+		contacts, err := getContacts(ctx, me)
+		if err != nil {
+			return nil, err
+		}
+		if len(contacts) == 0 {
+			return nil, errNoContacts
+		}
+		if len(contacts) > maxFollowAuthors {
+			contacts = contacts[:maxFollowAuthors]
+		}
+		filter.Authors = contacts
+	}
+
+	events := queryRelays(ctx, getRelayList(), filter)
 	if eventCache != nil {
 		for _, ev := range events {
 			_ = eventCache.StoreEvent(ev, 24*time.Hour)
 		}
-		if len(events) == 0 {
+		if len(events) == 0 && !following {
 			cached, _ := eventCache.GetEventsByPubKey("", 1, feedLimit)
 			events = cached
 		}
@@ -95,7 +123,7 @@ func getFeedPosts() ([]tui.FeedPost, error) {
 	for _, ev := range newestFirst(events, feedLimit) {
 		posts = append(posts, eventToFeedPost(ev))
 	}
-	return posts, nil
+	return withNames(posts), nil
 }
 
 // dmLimit caps how many DMs are fetched and shown.
@@ -164,7 +192,7 @@ func shortKey(k string) string {
 }
 
 // getDMs returns the user's NIP-04 direct messages (sent and received),
-// newest first.
+// newest first, with author names.
 func getDMs(privateKey string) ([]tui.FeedPost, error) {
 	publicKey, err := nostr.GetPublicKey(privateKey)
 	if err != nil {
@@ -182,31 +210,38 @@ func getDMs(privateKey string) ([]tui.FeedPost, error) {
 			dms = append(dms, post)
 		}
 	}
-	return dms, nil
+	return withNames(dms), nil
 }
 
-// getReactions returns reactions/replies to a specific event
-func getReactions(eventID string) ([]tui.FeedPost, error) {
-	relays := getRelayList()
+// getReactions returns replies (kind 1) and reactions (kind 7) to an event,
+// newest first. ref may be hex, note1… or nevent1… (whose relay hints are
+// queried too).
+func getReactions(ref string) ([]tui.FeedPost, error) {
+	er, err := parseEventRef(ref)
+	if err != nil {
+		return nil, err
+	}
 	filter := nostr.Filter{
-		Kinds: []int{7, 1}, // Reactions (7) and replies (1)
-		Tags:  nostr.TagMap{"e": []string{eventID}},
-		Limit: 20,
+		Kinds: []int{7, 1},
+		Tags:  nostr.TagMap{"e": []string{er.ID}},
+		Limit: 50,
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	var reactions []tui.FeedPost
-	for _, ev := range newestFirst(queryRelays(ctx, relays, filter), 20) {
-		content := ev.Content // reply
+	var out []tui.FeedPost
+	for _, ev := range newestFirst(queryRelays(ctx, append(getRelayList(), er.Relays...), filter), 50) {
+		p := eventToFeedPost(ev)
 		if ev.Kind == 7 {
-			content = fmt.Sprintf("[Reacted: %s]", ev.Content)
+			r := ev.Content
+			if r == "" || r == "+" {
+				r = "❤"
+			}
+			p.Content = fmt.Sprintf("[Reacted: %s]", r)
 		}
-		reactions = append(reactions, eventToFeedPost(ev))
-		reactions[len(reactions)-1].Content = content
+		out = append(out, p)
 	}
-
-	return reactions, nil
+	return withNames(out), nil
 }
 
 // getProfile prints the newest kind 0 (profile) event for pubKey.

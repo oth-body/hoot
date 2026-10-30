@@ -9,7 +9,8 @@ func (m Model) typing() bool {
 	case ScreenPost:
 		return !m.posting
 	case ScreenReplies:
-		return true
+		// The event-ID box; a thread opened from a list has no input.
+		return m.threadPost == nil
 	case ScreenTip:
 		return !m.tipping
 	case ScreenRelays:

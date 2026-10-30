@@ -445,13 +445,7 @@ func main() {
 		Content:   *messagePtr,
 		Tags:      nostr.Tags{},
 	}
-	words := strings.Fields(event.Content)
-	for _, word := range words {
-		if strings.HasPrefix(word, "#") {
-			tag := strings.Trim(word, "#.,!?:;")
-			event.Tags = append(event.Tags, []string{"t", tag})
-		}
-	}
+	event.Tags = append(event.Tags, hashtagTags(event.Content)...)
 	if err = event.Sign(sk); err != nil {
 		log.Fatalf("Failed to sign event: %v", err)
 	}
