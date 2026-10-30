@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"hoot/internal/testsigner"
@@ -836,3 +837,39 @@ func TestE2EAmberResumeFailsClearlyWhenSignerOffline(t *testing.T) {
 		t.Fatalf("err = %v, session = %v", err, nip46Session)
 	}
 }
+
+func TestMergeProfile(t *testing.T) {
+	cur := `{"name":"alice","about":"old","lud16":"a@b","custom":{"x":1}}`
+	sets, err := parseSets([]string{"about=new bio", "website=https://example.com", "lud16="})
+	if err != nil {
+		t.Fatal(err)
+	}
+	out, changes, err := mergeProfile(cur, sets)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got map[string]any
+	_ = json.Unmarshal([]byte(out), &got)
+	if got["name"] != "alice" || got["about"] != "new bio" || got["website"] != "https://example.com" || got["custom"] == nil {
+		t.Fatalf("merged = %s", out)
+	}
+	if _, ok := got["lud16"]; ok {
+		t.Fatalf("empty value should remove the field: %s", out)
+	}
+	if len(changes) != 3 {
+		t.Fatalf("changes = %v", changes)
+	}
+	if _, ch, _ := mergeProfile(out, map[string]*string{"name": ptr("alice")}); len(ch) != 0 {
+		t.Fatalf("no-op reported changes: %v", ch)
+	}
+	if _, _, err := mergeProfile("not json", sets); err == nil {
+		t.Fatal("invalid current profile accepted")
+	}
+	for _, bad := range []string{"name", "=x", "Name=x", "na me=x"} {
+		if _, err := parseSets([]string{bad}); err == nil {
+			t.Errorf("parseSets(%q) accepted", bad)
+		}
+	}
+}
+
+func ptr(s string) *string { return &s }

@@ -74,7 +74,9 @@ func main() {
 	relaysPtr := flag.String("r", "", "Comma-separated list of relay URLs")
 	listPtr := flag.Bool("l", false, "List last 4 posts from your profile")
 	profilePtr := flag.Bool("p", false, "Retrieve and display profile info")
-	updatePtr := flag.String("u", "", "Update profile info")
+	updatePtr := flag.String("u", "", "Replace your whole profile with this JSON (fields left out are removed; see -set)")
+	var setFlags stringList
+	flag.Var(&setFlags, "set", "Change one profile field, keeping the rest: -set name=Alice (repeatable; empty value removes the field)")
 	dmsPtr := flag.Bool("dms", false, "View direct messages")
 	dmToPtr := flag.String("dm", "", "Send the -m message as a private DM (NIP-17) to this npub or hex pubkey")
 	repliesPtr := flag.String("replies", "", "View replies/reactions for a specific event ID")
@@ -174,7 +176,7 @@ func main() {
 
 	// Interactive Login if no key found and no store flag
 	// Use flag.NFlag() == 0 to assume interactive mode if no flags provided
-	if !keyExists && !*storePtr && *messagePtr == "" && *updatePtr == "" && !*profilePtr && !*listPtr && *nwcPtr == "" && *tipPtr == 0 {
+	if !keyExists && !*storePtr && *messagePtr == "" && *updatePtr == "" && len(setFlags) == 0 && !*profilePtr && !*listPtr && *nwcPtr == "" && *tipPtr == 0 {
 		fmt.Println("No private key found.")
 		fmt.Print("Enter your Nostr private key (nsec) to login: ")
 		var input string
@@ -409,7 +411,7 @@ func main() {
 	if *dmToPtr != "" && *messagePtr == "" {
 		log.Fatalf("Use -dm together with -m \"message\"")
 	}
-	if *messagePtr == "" && !*profilePtr && *updatePtr == "" {
+	if *messagePtr == "" && !*profilePtr && *updatePtr == "" && len(setFlags) == 0 {
 		npub, _ := nip19.EncodePublicKey(pk)
 		fmt.Printf("Your Nostr public key (npub): %s\n", npub)
 		return
@@ -421,6 +423,31 @@ func main() {
 			getProfile(pk)
 			return nil
 		})
+		return
+	}
+
+	// Profile relays: -r overrides the saved list for -u and -set.
+	profileRelays := func() []string {
+		if *relaysPtr == "" {
+			return getRelayList()
+		}
+		relays := strings.Split(*relaysPtr, ",")
+		for i := range relays {
+			relays[i] = strings.TrimSpace(relays[i])
+		}
+		return relays
+	}
+
+	// Handle -set: merge fields into the current profile.
+	if len(setFlags) > 0 {
+		sets, err := parseSets(setFlags)
+		if err != nil {
+			log.Fatal(err)
+		}
+		if err := setProfileFields(sk, pk, profileRelays(), sets); err != nil {
+			log.Printf("Profile update failed: %v", err)
+			os.Exit(1)
+		}
 		return
 	}
 

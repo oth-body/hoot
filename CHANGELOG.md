@@ -7,6 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+- New `hoot -set key=value` (repeatable) changes individual profile fields and keeps everything else, including fields hoot doesn't know about. An empty value removes a field; the changes are printed before publishing. (`-u` still replaces the whole profile, and its help text now says so.)
 - **Amber sessions are remembered.** After pairing, the login screen offers "📱 Continue as NAME (Amber)", which reconnects without a QR scan (approve on the phone if Amber asks). `x` on it forgets the saved session. The pairing is stored in `amber_session.json` (0600). It lets this computer *ask* Amber to sign; to fully revoke, also remove Hoot in Amber.
 - Wallet connect (NIP-47) uses **NIP-44** encryption when the wallet advertises `nip44_v2` in its info event, and NIP-04 otherwise (older wallets).
 - **Private DMs (NIP-17).** Read and send gift-wrapped messages (shown with 🔒) alongside legacy NIP-04 DMs. Messages go to the recipient's DM inbox relays (kind 10050) when they've published them. In the TUI DMs screen: `n` new message, `r` reply. From the CLI: `hoot -dm <npub> -m "text"`.

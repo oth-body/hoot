@@ -72,4 +72,13 @@ func TestCLIEndToEndAgainstLocalRelay(t *testing.T) {
 	if out := run("-p"); !strings.Contains(out, `"name":"e2e-owl"`) {
 		t.Fatalf("-p output missing updated profile:\n%s", out)
 	}
+
+	// -set changes one field and keeps the rest (unlike -u).
+	out = run("-set", "about=new bio", "-set", "website=https://hoot.example")
+	if !strings.Contains(out, `~ about: "testing" → "new bio"`) || !strings.Contains(out, `+ website:`) {
+		t.Fatalf("-set output:\n%s", out)
+	}
+	if out := run("-p"); !strings.Contains(out, `"name":"e2e-owl"`) || !strings.Contains(out, `"about":"new bio"`) || !strings.Contains(out, `"website":"https://hoot.example"`) {
+		t.Fatalf("-p after -set:\n%s", out)
+	}
 }
