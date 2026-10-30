@@ -44,13 +44,13 @@ hoot -nwc "nostr+walletconnect://..."  # connect a wallet (once)
 hoot -tip 21 -user alice@getalby.com   # send a tip
 ```
 
-In the TUI: **↑/↓** or **j/k** to move, **Enter** to select, **Esc** to go back, **Ctrl+C** to quit.
+In the TUI: **↑/↓** or **j/k** to move, **Enter** to select, **Esc** to go back, **Ctrl+C** to quit. On the home screen the letter shown next to each item is its shortcut (`p` post, `f` feed, `d` DMs, `e` replies, `t` tip, `r` relays, `s` switch profile, `q` quit).
 
 ## Usage
 
 ### TUI
 
-Run `hoot` with no arguments. From the home screen you can post, view the feed, view DMs, look up replies and reactions to a note, tip someone, manage relays, and switch profiles.
+Run `hoot` with no arguments. From the home screen you can post, view the feed, view DMs, look up replies and reactions to a note, tip someone, manage relays, and switch profiles. Your full npub is shown under your name.
 
 Signing in with Amber: choose **Scan QR with Amber** and scan the code with the Amber app. Your name, NIP-05 and bio from your Nostr profile appear on the home screen. Reading DMs isn't supported with Amber yet.
 
@@ -73,6 +73,7 @@ The CLI uses the key stored with `hoot -s -k <nsec>` if there is one, otherwise 
 | `-register-handler "kinds"` | NIP-89: announce a handler app (with `-url-template`, `-platform`) |
 | `-recommend "pk:d:kind"` | NIP-89: recommend a handler app |
 | `-find-handlers <kind>` | NIP-89: list handler apps for a kind |
+| `-npub` | Print your npub (no password needed for TUI profiles) |
 | `-version` | Print version info |
 
 See the [CLI reference](https://hoot-docs.vercel.app/cli-reference/) for details and examples.
