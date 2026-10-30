@@ -68,6 +68,20 @@ func (m Model) handlePosted(msg postedMsg) (Model, tea.Cmd) {
 		return m, nil
 	}
 	m.textInput.Reset()
+	if m.dmTo != "" {
+		m.leaveCompose()
+		m.message = "DM sent 🔒"
+		m.messageStyle = successStyle
+		if m.onLoadDMs != nil {
+			msg := m.message
+			m.dmLoading = true
+			m.dmPosts = nil
+			cmd := m.startLoad(ScreenDMs, m.onLoadDMs)
+			m.message, m.messageStyle = msg, successStyle
+			return m, cmd
+		}
+		return m, nil
+	}
 	if m.replyTo != nil {
 		m.leaveCompose()
 		m.message = "Reply posted!"

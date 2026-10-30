@@ -4,12 +4,15 @@ import (
 	"context"
 	"flag"
 	"fmt"
+	"hoot/internal/testsigner"
 	"io"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/nbd-wtf/go-nostr/nip17"
 
 	"hoot/cache"
 	"hoot/internal/testrelay"
@@ -192,7 +195,8 @@ func TestE2EDMsSentAndReceived(t *testing.T) {
 		relay.Add(signedDM(t, c, dPK, "noise", base.Add(time.Duration(10+i)*time.Minute)))
 	}
 
-	dms, err := getDMs(alice)
+	useLocalKey(alice)
+	dms, err := getDMs()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -211,14 +215,16 @@ func TestDecryptDMRejectsUnrelatedAndMalformed(t *testing.T) {
 	a, b, c := nostr.GeneratePrivateKey(), nostr.GeneratePrivateKey(), nostr.GeneratePrivateKey()
 	aPK, _ := nostr.GetPublicKey(a)
 	cPK, _ := nostr.GetPublicKey(c)
+	k, _ := newLocalKeyer(a)
+	ctx := context.Background()
 	ev := signedDM(t, b, cPK, "not for a", time.Now())
-	if _, ok := decryptDM(ev, a, aPK); ok {
+	if _, ok := decryptDM04(ctx, k, aPK, ev); ok {
 		t.Error("decrypted a DM between two other people")
 	}
 	// Sent DM with no p tag must not panic.
 	noP := signedDM(t, a, cPK, "x", time.Now())
 	noP.Tags = nostr.Tags{}
-	if _, ok := decryptDM(noP, a, aPK); ok {
+	if _, ok := decryptDM04(ctx, k, aPK, noP); ok {
 		t.Error("accepted a sent DM with no recipient")
 	}
 }
@@ -619,5 +625,124 @@ func TestE2EReplyAndReact(t *testing.T) {
 	}
 	if err := publishReply(strings.Repeat("f", 64), "x"); err == nil {
 		t.Fatal("reply to a missing post should fail")
+	}
+}
+
+func dmRelayList(t *testing.T, sk string, relays ...string) *nostr.Event {
+	t.Helper()
+	pk, _ := nostr.GetPublicKey(sk)
+	ev := &nostr.Event{PubKey: pk, CreatedAt: nostr.Now(), Kind: 10050, Tags: nostr.Tags{}}
+	for _, r := range relays {
+		ev.Tags = append(ev.Tags, nostr.Tag{"relay", r})
+	}
+	if err := ev.Sign(sk); err != nil {
+		t.Fatal(err)
+	}
+	return ev
+}
+
+// NIP-17: Alice sends Bob a private DM; it's delivered to Bob's inbox relay
+// (kind 10050), Bob reads it, and Alice sees it as sent. Legacy NIP-04
+// messages still show alongside.
+func TestE2ENIP17DMs(t *testing.T) {
+	r := startRelay(t)
+	inbox := startRelay(t) // Bob's DM relay, not in anyone's general list
+	isolate(t, r.URL)
+	alice, bob := nostr.GeneratePrivateKey(), nostr.GeneratePrivateKey()
+	alicePK, _ := nostr.GetPublicKey(alice)
+	bobPK, _ := nostr.GetPublicKey(bob)
+	r.Add(signedProfile(t, bob, `{"name":"bob"}`))
+	r.Add(dmRelayList(t, bob, inbox.URL))
+	r.Add(signedDM(t, bob, alicePK, "old-style hello", time.Now().Add(-time.Hour)))
+
+	useLocalKey(alice)
+	if err := sendDM(bobPK, "private hello"); err != nil {
+		t.Fatal(err)
+	}
+	if n := len(inbox.Events()); n != 1 || inbox.Events()[0].Kind != 1059 {
+		t.Fatalf("Bob's inbox relay has %d events", n)
+	}
+	for _, ev := range append(r.Events(), inbox.Events()...) {
+		if ev.Kind == 1059 && (strings.Contains(ev.Content, "private hello") || ev.PubKey == alicePK) {
+			t.Fatal("gift wrap leaks the content or the sender")
+		}
+	}
+
+	useLocalKey(bob)
+	dms, err := getDMs()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(dms) != 2 || dms[0].Content != "🔒 [DM from]: private hello" || dms[0].Author != alicePK || dms[0].Peer != alicePK {
+		t.Fatalf("bob's DMs = %+v", dms)
+	}
+	if !strings.Contains(dms[1].Content, "[DM to ") || !strings.Contains(dms[1].Content, "old-style hello") {
+		t.Fatalf("legacy DM missing: %+v", dms[1])
+	}
+
+	useLocalKey(alice)
+	dms, err = getDMs()
+	if err != nil || len(dms) != 2 || dms[0].Content != "🔒 [DM to bob]: private hello" {
+		t.Fatalf("alice's DMs = %+v, %v", dms, err)
+	}
+}
+
+// With Amber (a remote signer) DMs are decrypted and sent through the
+// signer — previously DMs needed the private key on this computer.
+func TestE2EAmberDMs(t *testing.T) {
+	r := startRelay(t)
+	isolate(t, r.URL)
+	for _, v := range []string{"HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy", "ALL_PROXY", "all_proxy", "SOCKS_PROXY", "socks_proxy", "SOCKS5_PROXY", "socks5_proxy"} {
+		t.Setenv(v, "")
+	}
+	me, friend := nostr.GeneratePrivateKey(), nostr.GeneratePrivateKey()
+	mePK, _ := nostr.GetPublicKey(me)
+	friendPK, _ := nostr.GetPublicKey(friend)
+
+	signer, err := testsigner.Start(r.URL, me)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(signer.Close)
+	_, sess, err := nip46.GenerateConnectURI([]string{r.URL}, "test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	sess.RelayURLs = []string{r.URL}
+	if err := sess.ConnectRelays(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	sess.SignerPublicKey = signer.PubKey
+	sess.UserPublicKey = mePK
+	nip46Session = sess
+
+	// The friend (local key) sends one NIP-04 and one NIP-17 message.
+	r.Add(signedDM(t, friend, mePK, "legacy hi", time.Now().Add(-time.Minute)))
+	localKeyFriend, _ := newLocalKeyer(friend)
+	_, toMe, err := nip17.PrepareMessage(context.Background(), "private hi", nostr.Tags{}, localKeyFriend, mePK, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r.Add(&toMe)
+
+	dms, err := getDMs()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(dms) != 2 || dms[0].Content != "🔒 [DM from]: private hi" || dms[1].Content != "[DM from]: legacy hi" {
+		t.Fatalf("dms = %+v", dms)
+	}
+	if signer.Calls("nip44_decrypt") < 2 || signer.Calls("nip04_decrypt") < 1 {
+		t.Fatalf("decrypts not done by the signer: nip44=%d nip04=%d", signer.Calls("nip44_decrypt"), signer.Calls("nip04_decrypt"))
+	}
+
+	if err := sendDM(friendPK, "reply via amber"); err != nil {
+		t.Fatal(err)
+	}
+	nip46Session = nil
+	useLocalKey(friend)
+	dms, err = getDMs()
+	if err != nil || len(dms) == 0 || dms[0].Content != "🔒 [DM from]: reply via amber" || dms[0].Author != mePK {
+		t.Fatalf("friend's DMs = %+v, %v", dms, err)
 	}
 }

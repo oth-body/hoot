@@ -10,7 +10,6 @@ import (
 	"time"
 
 	"github.com/nbd-wtf/go-nostr"
-	"github.com/nbd-wtf/go-nostr/nip04"
 )
 
 // listPosts prints the user's 4 newest notes across all relays.
@@ -126,62 +125,6 @@ func getFeedPosts(following bool) ([]tui.FeedPost, error) {
 	return withNames(posts), nil
 }
 
-// dmLimit caps how many DMs are fetched and shown.
-const dmLimit = 50
-
-// dmFilters returns the two filters needed to see a user's whole NIP-04
-// conversation history: messages they received (#p) and messages they sent
-// (authors). The previous single filter {kinds:[4], limit:50} asked relays
-// for the 50 newest DMs *on the whole network* and then discarded the ones
-// that didn't involve the user — which in practice was nearly all of them.
-func dmFilters(publicKey string) []nostr.Filter {
-	return []nostr.Filter{
-		{Kinds: []int{4}, Tags: nostr.TagMap{"p": []string{publicKey}}, Limit: dmLimit},
-		{Kinds: []int{4}, Authors: []string{publicKey}, Limit: dmLimit},
-	}
-}
-
-// decryptDM turns a kind-4 event into a display post if it involves the
-// user. NIP-04's shared secret is ECDH(our privkey, *the other party's*
-// pubkey): for an incoming DM that's the author, for an outgoing DM it's the
-// p-tagged recipient. The old code always used the author, so the user's own
-// sent messages could never be decrypted and silently vanished.
-func decryptDM(ev *nostr.Event, privateKey, publicKey string) (tui.FeedPost, bool) {
-	var recipient string
-	if p := ev.Tags.GetFirst([]string{"p"}); p != nil && len(*p) > 1 {
-		recipient = (*p)[1]
-	}
-
-	var counterparty, label string
-	switch {
-	case ev.PubKey == publicKey:
-		if recipient == "" {
-			return tui.FeedPost{}, false
-		}
-		counterparty = recipient
-		label = "to " + shortKey(recipient)
-	case recipient == publicKey:
-		counterparty = ev.PubKey
-		label = "from"
-	default:
-		return tui.FeedPost{}, false
-	}
-
-	ss, err := nip04.ComputeSharedSecret(counterparty, privateKey)
-	if err != nil {
-		return tui.FeedPost{}, false
-	}
-	plain, err := nip04.Decrypt(ev.Content, ss)
-	if err != nil {
-		return tui.FeedPost{}, false
-	}
-	return tui.FeedPost{
-		Author:    ev.PubKey,
-		Content:   fmt.Sprintf("[DM %s]: %s", label, plain),
-		CreatedAt: time.Unix(int64(ev.CreatedAt), 0).Format("Jan 2 15:04"),
-	}, true
-}
-
 // shortKey returns the first 8 chars of a key followed by "...", without
 // panicking on short input.
 func shortKey(k string) string {
@@ -189,28 +132,6 @@ func shortKey(k string) string {
 		return k[:8] + "..."
 	}
 	return k
-}
-
-// getDMs returns the user's NIP-04 direct messages (sent and received),
-// newest first, with author names.
-func getDMs(privateKey string) ([]tui.FeedPost, error) {
-	publicKey, err := nostr.GetPublicKey(privateKey)
-	if err != nil {
-		return nil, fmt.Errorf("failed to derive public key: %w", err)
-	}
-
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-	defer cancel()
-
-	events := newestFirst(queryRelays(ctx, getRelayList(), dmFilters(publicKey)...), dmLimit)
-
-	var dms []tui.FeedPost
-	for _, ev := range events {
-		if post, ok := decryptDM(ev, privateKey, publicKey); ok {
-			dms = append(dms, post)
-		}
-	}
-	return withNames(dms), nil
 }
 
 // getReactions returns replies (kind 1) and reactions (kind 7) to an event,

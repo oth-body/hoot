@@ -76,6 +76,7 @@ func main() {
 	profilePtr := flag.Bool("p", false, "Retrieve and display profile info")
 	updatePtr := flag.String("u", "", "Update profile info")
 	dmsPtr := flag.Bool("dms", false, "View direct messages")
+	dmToPtr := flag.String("dm", "", "Send the -m message as a private DM (NIP-17) to this npub or hex pubkey")
 	repliesPtr := flag.String("replies", "", "View replies/reactions for a specific event ID")
 	versionPtr := flag.Bool("version", false, "Display the version")
 	npubPtr := flag.Bool("npub", false, "Print your public key (npub) and exit")
@@ -368,7 +369,8 @@ func main() {
 	// Handle DMs action with loading.
 	if *dmsPtr {
 		err = withLoading("Loading DMs", func() error {
-			dms, err := getDMs(sk)
+			useLocalKey(sk)
+			dms, err := getDMs()
 			if err != nil {
 				return fmt.Errorf("failed to load DMs: %w", err)
 			}
@@ -404,6 +406,9 @@ func main() {
 	}
 
 	// If no message is provided, just show the public key and exit.
+	if *dmToPtr != "" && *messagePtr == "" {
+		log.Fatalf("Use -dm together with -m \"message\"")
+	}
 	if *messagePtr == "" && !*profilePtr && *updatePtr == "" {
 		npub, _ := nip19.EncodePublicKey(pk)
 		fmt.Printf("Your Nostr public key (npub): %s\n", npub)
@@ -434,6 +439,21 @@ func main() {
 			editProfile(sk, *updatePtr, pk, relays)
 			return nil
 		})
+		return
+	}
+
+	// Send a private DM instead of a public note.
+	if *dmToPtr != "" {
+		to, err := parsePubKey(strings.TrimSpace(*dmToPtr))
+		if err != nil {
+			log.Fatalf("Invalid -dm recipient: %v", err)
+		}
+		useLocalKey(sk)
+		if err := withLoading("Sending DM", func() error { return sendDM(to, *messagePtr) }); err != nil {
+			log.Printf("Sending DM failed: %v", err)
+			os.Exit(1)
+		}
+		fmt.Println("DM sent.")
 		return
 	}
 

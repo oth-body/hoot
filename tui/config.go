@@ -17,7 +17,7 @@ type Config struct {
 	// OnLoadFollowingFeed loads posts from people the user follows (kind-3
 	// contact list). Optional: without it the feed is global-only.
 	OnLoadFollowingFeed func() ([]FeedPost, error)
-	OnLoadDMs           func(privateKey string) ([]FeedPost, error)
+	OnLoadDMs           func() ([]FeedPost, error)
 	OnLoadReplies       func(eventID string) ([]FeedPost, error)
 	OnInitQR            func() (string, error)
 	OnCheckQR           func() (string, *nip46.ProfileMetadata, error)
@@ -37,6 +37,8 @@ type Config struct {
 	// OnZap zaps a post's author (NIP-57, falling back to a plain tip) and
 	// returns a one-line summary.
 	OnZap func(pubkey, eventID string, sats int64) (string, error)
+	// OnSendDM sends a private (NIP-17) DM.
+	OnSendDM func(recipientHex, text string) error
 	// OnTip pays a tip (see Model.onTip).
 	OnTip func(target string, sats int64) (string, error)
 }
@@ -66,6 +68,7 @@ func newModelFromConfig(cfg Config) Model {
 	m.onReply = cfg.OnReply
 	m.onReact = cfg.OnReact
 	m.onZap = cfg.OnZap
+	m.onSendDM = cfg.OnSendDM
 	m.onTip = cfg.OnTip
 
 	// Load profiles on startup

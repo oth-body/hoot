@@ -208,8 +208,9 @@ func tuiConfig() tui.Config {
 			}
 			return res.String(), nil
 		},
-		OnReply: publishReply,
-		OnReact: publishReaction,
+		OnSendDM: sendDM,
+		OnReply:  publishReply,
+		OnReact:  publishReaction,
 		OnZap: func(pubkey, eventID string, sats int64) (string, error) {
 			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 			defer cancel()
