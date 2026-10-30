@@ -14,7 +14,19 @@ func (m Model) handlePostEnter() (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 
-	if m.posting || m.onPost == nil {
+	if m.posting {
+		return m, nil
+	}
+	if m.replyTo != nil {
+		if m.onReply == nil {
+			return m, nil
+		}
+		m.posting = true
+		m.message = ""
+		reply, parent := m.onReply, m.replyTo.ID
+		return m, func() tea.Msg { return postedMsg{err: reply(parent, content)} }
+	}
+	if m.onPost == nil {
 		return m, nil
 	}
 	m.posting = true
@@ -26,8 +38,15 @@ func (m Model) handlePostEnter() (tea.Model, tea.Cmd) {
 func (m Model) viewPost() string {
 	var b strings.Builder
 
-	b.WriteString(titleStyle.Render("📝 New Post"))
-	b.WriteString("\n\n")
+	if m.replyTo != nil {
+		b.WriteString(titleStyle.Render("↩ Reply"))
+		b.WriteString("\n\n")
+		b.WriteString(menuStyle.Render("Replying to " + authorLabel(*m.replyTo) + ": " + truncateRunes(oneLine(m.replyTo.Content, 200), 70)))
+		b.WriteString("\n\n")
+	} else {
+		b.WriteString(titleStyle.Render("📝 New Post"))
+		b.WriteString("\n\n")
+	}
 	b.WriteString(m.textInput.View())
 	b.WriteString("\n\n")
 	if m.posting {

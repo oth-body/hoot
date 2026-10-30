@@ -374,7 +374,7 @@ func main() {
 			}
 			fmt.Println("Your recent direct messages:")
 			for _, dm := range dms {
-				fmt.Printf("%s (%s): %s\n\n", shortKey(dm.Author), dm.CreatedAt, dm.Content)
+				fmt.Printf("%s (%s): %s\n\n", postAuthor(dm), dm.CreatedAt, dm.Content)
 			}
 			return nil
 		})
@@ -393,7 +393,7 @@ func main() {
 			}
 			fmt.Printf("Replies and reactions to event %s:\n", *repliesPtr)
 			for _, reply := range replies {
-				fmt.Printf("%s (%s): %s\n\n", shortKey(reply.Author), reply.CreatedAt, reply.Content)
+				fmt.Printf("%s (%s): %s\n\n", postAuthor(reply), reply.CreatedAt, reply.Content)
 			}
 			return nil
 		})

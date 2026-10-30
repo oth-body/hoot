@@ -558,3 +558,66 @@ func TestE2ETUIPostTagsHashtags(t *testing.T) {
 		t.Fatalf("tags = %v", evs[0].Tags)
 	}
 }
+
+func TestReplyTagsNIP10(t *testing.T) {
+	me := strings.Repeat("0", 64)
+	a, b, c := strings.Repeat("a", 64), strings.Repeat("b", 64), strings.Repeat("c", 64)
+	root := &nostr.Event{ID: strings.Repeat("1", 64), PubKey: a, Tags: nostr.Tags{{"t", "x"}}}
+	if got := replyTags(root, me); fmt.Sprint(got) != fmt.Sprint(nostr.Tags{{"e", root.ID, "", "root", a}, {"p", a}}) {
+		t.Errorf("reply to root: %v", got)
+	}
+	// Reply to a reply: root stays the thread root, parent becomes "reply";
+	// everyone already mentioned is kept, and I'm never tagged.
+	mid := &nostr.Event{ID: strings.Repeat("2", 64), PubKey: b, Tags: nostr.Tags{{"e", root.ID, "", "root"}, {"p", a}, {"p", c}, {"p", me}}}
+	want := nostr.Tags{{"e", root.ID, "", "root"}, {"e", mid.ID, "", "reply", b}, {"p", b}, {"p", a}, {"p", c}}
+	if got := replyTags(mid, me); fmt.Sprint(got) != fmt.Sprint(want) {
+		t.Errorf("nested reply:\n got %v\nwant %v", got, want)
+	}
+	// Legacy positional e-tags: the first is the root.
+	legacy := &nostr.Event{ID: strings.Repeat("3", 64), PubKey: c, Tags: nostr.Tags{{"e", root.ID}, {"e", mid.ID}}}
+	if got := replyTags(legacy, me); got[0][1] != root.ID || got[0][3] != "root" || got[1][1] != legacy.ID || got[1][3] != "reply" {
+		t.Errorf("legacy: %v", got)
+	}
+}
+
+func TestE2EReplyAndReact(t *testing.T) {
+	r := startRelay(t)
+	isolate(t, r.URL)
+	author := nostr.GeneratePrivateKey()
+	authorPK, _ := nostr.GetPublicKey(author)
+	post := signedNote(t, author, "original", time.Now().Add(-time.Minute))
+	r.Add(post)
+
+	me := nostr.GeneratePrivateKey()
+	useLocalKey(me)
+	if err := publishReply(post.ID, "agreed #nostr"); err != nil {
+		t.Fatal(err)
+	}
+	if err := publishReaction(post.ID); err != nil {
+		t.Fatal(err)
+	}
+	replies, err := getReactions(post.ID)
+	if err != nil || len(replies) != 2 {
+		t.Fatalf("thread = %+v, %v", replies, err)
+	}
+	var reply, like *nostr.Event
+	for _, ev := range r.Events() {
+		switch ev.Kind {
+		case 1:
+			if ev.ID != post.ID {
+				reply = ev
+			}
+		case 7:
+			like = ev
+		}
+	}
+	if reply == nil || reply.Tags.GetFirst([]string{"t"}) == nil || reply.Tags.GetFirst([]string{"p", authorPK}) == nil {
+		t.Fatalf("reply = %+v", reply)
+	}
+	if like == nil || like.Content != "+" || like.Tags.GetFirst([]string{"e", post.ID}) == nil || like.Tags.GetFirst([]string{"k", "1"}) == nil {
+		t.Fatalf("like = %+v", like)
+	}
+	if err := publishReply(strings.Repeat("f", 64), "x"); err == nil {
+		t.Fatal("reply to a missing post should fail")
+	}
+}

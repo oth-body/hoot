@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+- Feed and threads: act on the selected post. **`r` reply** (NIP-10 threading: root/reply markers, everyone in the thread tagged), **`+` like** (NIP-25), **`z` zap**. Esc cancels a reply or zap and returns to the list; replying inside a thread reloads it so your reply shows up.
+- **Zaps (NIP-57):** if the recipient's Lightning address supports Nostr zaps, hoot attaches a signed zap request, so the zap appears on Nostr against the post. Otherwise it's sent as a plain tip and hoot says so. Works with both local keys and Amber.
+- CLI `-dms` / `-replies` show author names instead of hex prefixes when known.
 - Feed: shows author **names** (from their profiles, cached for a day) instead of hex keys, in the feed, DMs and replies.
 - Feed: **Following** mode: press `g` to switch between the global feed and posts from people you follow (your kind-3 contact list).
 - Feed: select a post with ↑/↓ and press **Enter to open its thread** (replies and reactions); Enter on a reply opens that thread; Esc goes back. The selected post's `note1…` ID is shown so you can copy it.

@@ -182,3 +182,12 @@ func hashtagTags(content string) nostr.Tags {
 	}
 	return tags
 }
+
+// postAuthor is the author's name if known, else a short hex prefix (CLI
+// output).
+func postAuthor(p tui.FeedPost) string {
+	if p.AuthorName != "" {
+		return p.AuthorName
+	}
+	return shortKey(p.Author)
+}

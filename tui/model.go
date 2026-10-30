@@ -162,6 +162,17 @@ type Model struct {
 	// screen, so a stale session can never sign events for the next login.
 	onLogout func()
 
+	// Post actions (see actions.go)
+	onReply func(parentID, content string) error
+	onReact func(eventID string) error
+	onZap   func(pubkey, eventID string, sats int64) (string, error)
+
+	replyTo     *FeedPost // composer is replying to this post
+	replyReturn Screen    // where to go after the reply
+	zapPost     *FeedPost // tip screen is zapping this post
+	tipReturn   Screen    // where to go after the zap
+	reacting    bool
+
 	// onTip pays sats to target (lightning address, npub or hex pubkey)
 	// and returns a one-line summary. It blocks until the wallet answers,
 	// so the model runs it in a tea.Cmd.
@@ -279,6 +290,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return nm, nil
 			}
 		}
+		if m.screen == ScreenFeed || (m.screen == ScreenReplies && m.threadPost != nil) {
+			if nm, cmd, ok := m.handleActionKey(key); ok {
+				return nm, cmd
+			}
+		}
 		if m.screen == ScreenFeed && key == "g" && m.onLoadFollowingFeed != nil {
 			m.feedFollowing = !m.feedFollowing
 			return m, m.reloadFeed()
@@ -323,6 +339,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				// there is no Home screen to return to.
 				m.screen = ScreenLogin
 				m.cursor = 0
+				m.message = ""
+				return m, nil
+			}
+			if (m.screen == ScreenPost && m.replyTo != nil) || (m.screen == ScreenTip && m.zapPost != nil && !m.tipping) {
+				// Cancel a reply or zap: back to the list, not Home.
+				m.leaveCompose()
 				m.message = ""
 				return m, nil
 			}
@@ -512,8 +534,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case tipResultMsg:
 		m.tipping = false
+		what := "Tip"
+		if m.zapPost != nil {
+			what = "Zap"
+			m.leaveCompose()
+		}
 		if msg.err != nil {
-			m.message = fmt.Sprintf("Tip failed: %v", msg.err)
+			m.message = fmt.Sprintf("%s failed: %v", what, msg.err)
 			m.messageStyle = errorStyle
 		} else {
 			m.message = "⚡ " + msg.summary
@@ -521,6 +548,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.resetTipForm()
 		return m, nil
+
+	case reactedMsg:
+		return m.handleReacted(msg)
 
 	case checkQRTickMsg:
 		// Fired by the retry timer above — run another check, unless the

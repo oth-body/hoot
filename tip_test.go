@@ -64,7 +64,9 @@ type tipFixture struct {
 	invoiceMsat  func(requested int64) int64         // what the LNURL server bills
 	minSendable  int64
 	maxSendable  int64
-	lnurlFailure string // non-empty → LNURL returns status ERROR
+	lnurlFailure string       // non-empty → LNURL returns status ERROR
+	allowsNostr  bool         // NIP-57 support advertised by the LNURL server
+	zapRequest   atomic.Value // the raw "nostr" query param of the last callback
 }
 
 func newTipFixture(t *testing.T) *tipFixture {
@@ -83,10 +85,15 @@ func newTipFixture(t *testing.T) *tipFixture {
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/.well-known/lnurlp/alice", func(w http.ResponseWriter, r *http.Request) {
-		json.NewEncoder(w).Encode(map[string]any{
+		resp := map[string]any{
 			"callback": "https://" + r.Host + "/cb?user=alice", "tag": "payRequest",
 			"minSendable": f.minSendable, "maxSendable": f.maxSendable, "metadata": "[]",
-		})
+		}
+		if f.allowsNostr {
+			resp["allowsNostr"] = true
+			resp["nostrPubkey"] = strings.Repeat("9", 64)
+		}
+		json.NewEncoder(w).Encode(resp)
 	})
 	mux.HandleFunc("/cb", func(w http.ResponseWriter, r *http.Request) {
 		if f.lnurlFailure != "" {
@@ -99,6 +106,7 @@ func newTipFixture(t *testing.T) *tipFixture {
 		}
 		var amt int64
 		fmt.Sscan(r.URL.Query().Get("amount"), &amt)
+		f.zapRequest.Store(r.URL.Query().Get("nostr"))
 		json.NewEncoder(w).Encode(map[string]any{"pr": fakeInvoice(f.invoiceMsat(amt)), "routes": []any{}})
 	})
 	f.lnurl = httptest.NewTLSServer(mux)
@@ -284,5 +292,67 @@ func TestTipRejectsBadInput(t *testing.T) {
 		if _, err := tipUser(context.Background(), c.target, c.sats, nil); err == nil || !strings.Contains(err.Error(), c.want) {
 			t.Errorf("tipUser(%q,%d) err = %v, want %q", c.target, c.sats, err, c.want)
 		}
+	}
+}
+
+// profileWithLud16 publishes a kind-0 for a new key whose lud16 is the
+// fixture's address, returning the key's hex pubkey.
+func (f *tipFixture) recipient(t *testing.T) string {
+	t.Helper()
+	sk := nostr.GeneratePrivateKey()
+	pk, _ := nostr.GetPublicKey(sk)
+	ev := &nostr.Event{PubKey: pk, CreatedAt: nostr.Now(), Kind: 0, Tags: nostr.Tags{}, Content: fmt.Sprintf(`{"lud16":%q}`, f.address)}
+	_ = ev.Sign(sk)
+	f.relay.Add(ev)
+	return pk
+}
+
+// NIP-57: with allowsNostr the callback gets a signed kind-9734 zap request
+// naming the recipient, the event and the amount.
+func TestE2EZapSendsSignedZapRequest(t *testing.T) {
+	f := newTipFixture(t)
+	f.allowsNostr = true
+	me := nostr.GeneratePrivateKey()
+	mePK, _ := nostr.GetPublicKey(me)
+	useLocalKey(me)
+	to := f.recipient(t)
+	eventID := strings.Repeat("e", 64)
+
+	res, err := zapUser(context.Background(), to, eventID, 21, "great post")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !res.Zapped || !strings.HasPrefix(res.String(), "Zapped 21 sats") {
+		t.Fatalf("result = %+v (%s)", res, res)
+	}
+	raw, _ := f.zapRequest.Load().(string)
+	var zr nostr.Event
+	if err := json.Unmarshal([]byte(raw), &zr); err != nil {
+		t.Fatalf("zap request param %q: %v", raw, err)
+	}
+	if ok, _ := zr.CheckSignature(); !ok || zr.Kind != 9734 || zr.PubKey != mePK || zr.Content != "great post" {
+		t.Fatalf("zap request = %+v", zr)
+	}
+	want := map[string]string{"p": to, "e": eventID, "amount": "21000"}
+	for k, v := range want {
+		if tag := zr.Tags.GetFirst([]string{k}); tag == nil || (*tag)[1] != v {
+			t.Errorf("tag %s = %v, want %s", k, tag, v)
+		}
+	}
+	if tag := zr.Tags.GetFirst([]string{"relays"}); tag == nil || len(*tag) < 2 {
+		t.Errorf("relays tag missing: %v", zr.Tags)
+	}
+}
+
+// Without allowsNostr the payment still goes through, as a plain tip.
+func TestE2EZapFallsBackToPlainTip(t *testing.T) {
+	f := newTipFixture(t)
+	useLocalKey(nostr.GeneratePrivateKey())
+	res, err := zapUser(context.Background(), f.recipient(t), "", 21, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Zapped || f.zapRequest.Load() != "" {
+		t.Fatalf("zapped=%v nostr param=%v", res.Zapped, f.zapRequest.Load())
 	}
 }
