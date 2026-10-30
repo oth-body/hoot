@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+- TUI: delete a saved profile from the login screen: highlight it, press `x`, confirm with `y`.
+- TUI: the last-used (★) profile is highlighted when the login screen opens.
+- Internal: login steps are an explicit state instead of magic cursor values (50/51/100/200); `hoot.go` and `tui/tui.go` are split into files by concern.
 - Relay connections now use hoot's own client (`internal/relay`) instead of go-nostr's `Relay`/`SimplePool`. go-nostr's `Relay.close` raced with its own connection goroutine on every disconnect (in a narrow window that could nil-dereference). go-nostr is still used for event types, signing and NIP-04/19 helpers.
 - Relays are queried and published to **in parallel**, so loading the feed, DMs and profiles no longer waits on each relay in turn.
 - The full test suite now runs under `-race` (the relay-backed tests used to skip).
