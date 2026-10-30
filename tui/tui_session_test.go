@@ -5,11 +5,13 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+	"unicode/utf8"
+
+	"hoot/nip46"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/nbd-wtf/go-nostr"
 	"github.com/nbd-wtf/go-nostr/nip19"
-	"hoot/nip46"
 )
 
 func press(t *testing.T, m Model, msg tea.Msg) (Model, tea.Cmd) {
@@ -537,5 +539,66 @@ func TestPostFailureKeepsDraft(t *testing.T) {
 	m, _ = press(t, m, cmd())
 	if m.posting || m.screen != ScreenPost || m.textInput.Value() != "draft" || !strings.Contains(m.message, "Failed to post") {
 		t.Fatalf("posting=%v screen=%v draft=%q msg=%q", m.posting, m.screen, m.textInput.Value(), m.message)
+	}
+}
+
+func TestFeedSelectOpenThreadAndBack(t *testing.T) {
+	posts := []FeedPost{
+		{ID: strings.Repeat("1", 64), Author: strings.Repeat("a", 64), AuthorName: "Alice", Content: "first", CreatedAt: "Oct 1"},
+		{ID: strings.Repeat("2", 64), Author: strings.Repeat("b", 64), Content: "second", CreatedAt: "Oct 2"},
+	}
+	var asked string
+	m := newModelFromConfig(Config{
+		OnLoadFeed: func() ([]FeedPost, error) { return posts, nil },
+		OnLoadReplies: func(id string) ([]FeedPost, error) {
+			asked = id
+			return []FeedPost{{ID: strings.Repeat("3", 64), Author: strings.Repeat("c", 64), AuthorName: "Carol", Content: "nice"}}, nil
+		},
+	})
+	m.loggedIn, m.screen = true, ScreenHome
+	m, cmd := press(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("f")})
+	m, _ = run(t, m, cmd)
+	v := m.View()
+	if !strings.Contains(v, "Alice") || !strings.Contains(v, "npub1") || !strings.Contains(v, "note1") {
+		t.Fatalf("feed should show names (or npubs) and the selected note ID:\n%s", v)
+	}
+
+	m, _ = press(t, m, tea.KeyMsg{Type: tea.KeyDown})
+	m, cmd = press(t, m, tea.KeyMsg{Type: tea.KeyEnter})
+	if m.screen != ScreenReplies || m.threadPost == nil || m.typing() {
+		t.Fatalf("thread not opened: screen=%v thread=%v typing=%v", m.screen, m.threadPost, m.typing())
+	}
+	m, _ = run(t, m, cmd)
+	if asked != posts[1].ID || !strings.Contains(m.View(), "second") || !strings.Contains(m.View(), "Carol") {
+		t.Fatalf("asked=%s\n%s", asked, m.View())
+	}
+	m, _ = press(t, m, tea.KeyMsg{Type: tea.KeyEsc})
+	if m.screen != ScreenFeed || m.threadPost != nil || len(m.feedPosts) != 2 {
+		t.Fatalf("esc should return to the feed: screen=%v", m.screen)
+	}
+}
+
+func TestFeedToggleFollowing(t *testing.T) {
+	m := newModelFromConfig(Config{
+		OnLoadFeed:          func() ([]FeedPost, error) { return []FeedPost{{Content: "global"}}, nil },
+		OnLoadFollowingFeed: func() ([]FeedPost, error) { return []FeedPost{{Content: "friend"}}, nil },
+	})
+	m.loggedIn, m.screen = true, ScreenHome
+	m, cmd := press(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("f")})
+	m, _ = run(t, m, cmd)
+	if !strings.Contains(m.View(), "Global feed") || !strings.Contains(m.View(), "g following") {
+		t.Fatalf("%s", m.View())
+	}
+	m, cmd = press(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("g")})
+	m, _ = run(t, m, cmd)
+	if !m.feedFollowing || !strings.Contains(m.View(), "Following") || m.feedPosts[0].Content != "friend" {
+		t.Fatalf("following=%v\n%s", m.feedFollowing, m.View())
+	}
+}
+
+func TestTruncateRunesKeepsUTF8Valid(t *testing.T) {
+	got := truncateRunes(strings.Repeat("é🦉", 200), 10)
+	if !utf8.ValidString(got) || len([]rune(got)) != 10 {
+		t.Fatalf("%q", got)
 	}
 }

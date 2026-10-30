@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"flag"
 	"fmt"
 	"io"
@@ -103,7 +104,7 @@ func TestE2EPublishFromTUIAppearsInFeed(t *testing.T) {
 		t.Fatalf("relay got %+v", evs)
 	}
 
-	posts, err := getFeedPosts()
+	posts, err := getFeedPosts(false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -135,7 +136,7 @@ func TestE2EFeedIsNotFrozenByCache(t *testing.T) {
 
 	relay.Add(signedNote(t, nostr.GeneratePrivateKey(), "fresh post", time.Now()))
 
-	posts, err := getFeedPosts()
+	posts, err := getFeedPosts(false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -159,7 +160,7 @@ func TestE2EFeedFallsBackToCacheWhenRelaysDown(t *testing.T) {
 	_ = c.StoreEvent(signedNote(t, sk, "older", time.Now().Add(-2*time.Hour)), time.Hour*24)
 	_ = c.StoreEvent(signedNote(t, sk, "newer", time.Now().Add(-1*time.Hour)), time.Hour*24)
 
-	posts, err := getFeedPosts()
+	posts, err := getFeedPosts(false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -424,5 +425,136 @@ func TestNpubFlagWithLegacyKey(t *testing.T) {
 	want, _ := nip19.EncodePublicKey(pk)
 	if got := runMainCapture(t, "-npub"); got != want+"\n" {
 		t.Fatalf("stdout = %q, want %q", got, want+"\n")
+	}
+}
+
+func TestHashtagTags(t *testing.T) {
+	got := hashtagTags("gm #Nostr #nostr, #go-lang! # #a_b. #")
+	want := nostr.Tags{{"t", "nostr"}, {"t", "go-lang"}, {"t", "a_b"}}
+	if fmt.Sprint(got) != fmt.Sprint(want) {
+		t.Fatalf("got %v, want %v", got, want)
+	}
+}
+
+func TestParseEventRef(t *testing.T) {
+	id := strings.Repeat("ab", 32)
+	note, _ := nip19.EncodeNote(id)
+	nevent, _ := nip19.EncodeEvent(id, []string{"wss://hint.example"}, "")
+	for _, in := range []string{id, strings.ToUpper(id), note, "nostr:" + note, nevent} {
+		r, err := parseEventRef(in)
+		if err != nil || r.ID != id {
+			t.Errorf("parseEventRef(%q) = %+v, %v", in, r, err)
+		}
+	}
+	if r, _ := parseEventRef(nevent); len(r.Relays) != 1 || r.Relays[0] != "wss://hint.example" {
+		t.Errorf("nevent relay hints lost: %+v", r)
+	}
+	npub, _ := nip19.EncodePublicKey(id)
+	for _, bad := range []string{"", "xyz", npub} {
+		if _, err := parseEventRef(bad); err == nil {
+			t.Errorf("parseEventRef(%q) accepted", bad)
+		}
+	}
+}
+
+func signedProfile(t *testing.T, sk, content string) *nostr.Event {
+	t.Helper()
+	pk, _ := nostr.GetPublicKey(sk)
+	ev := &nostr.Event{PubKey: pk, CreatedAt: nostr.Now(), Kind: 0, Tags: nostr.Tags{}, Content: content}
+	if err := ev.Sign(sk); err != nil {
+		t.Fatal(err)
+	}
+	return ev
+}
+
+// The feed shows author names (display_name, else name), fetched once and
+// then served from the cache.
+func TestE2EFeedShowsAuthorNamesAndCachesThem(t *testing.T) {
+	r := startRelay(t)
+	dir := isolate(t, r.URL)
+	c, err := cache.New(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { c.Close() })
+	eventCache = c
+
+	alice, bob := nostr.GeneratePrivateKey(), nostr.GeneratePrivateKey()
+	r.Add(signedProfile(t, alice, `{"name":"alice","display_name":"Alice A."}`))
+	r.Add(signedProfile(t, bob, `{"name":"bob"}`))
+	r.Add(signedNote(t, alice, "from alice", time.Now().Add(-time.Minute)))
+	r.Add(signedNote(t, bob, "from bob", time.Now()))
+
+	posts, err := getFeedPosts(false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(posts) != 2 || posts[0].AuthorName != "bob" || posts[1].AuthorName != "Alice A." || posts[0].ID == "" {
+		t.Fatalf("posts = %+v", posts)
+	}
+	r.Close() // names must now come from the cache
+	alicePK, _ := nostr.GetPublicKey(alice)
+	if n := resolveNames(context.Background(), []string{alicePK}); n[alicePK] != "Alice A." {
+		t.Fatalf("cached name = %q", n[alicePK])
+	}
+}
+
+func TestE2EFollowingFeed(t *testing.T) {
+	r := startRelay(t)
+	isolate(t, r.URL)
+	me, friend, stranger := nostr.GeneratePrivateKey(), nostr.GeneratePrivateKey(), nostr.GeneratePrivateKey()
+	friendPK, _ := nostr.GetPublicKey(friend)
+	useLocalKey(me)
+
+	if _, err := getFeedPosts(true); err == nil || !strings.Contains(err.Error(), "don't follow anyone") {
+		t.Fatalf("no contact list: err = %v", err)
+	}
+
+	mePK, _ := nostr.GetPublicKey(me)
+	contacts := &nostr.Event{PubKey: mePK, CreatedAt: nostr.Now(), Kind: 3, Tags: nostr.Tags{{"p", friendPK}}}
+	_ = contacts.Sign(me)
+	r.Add(contacts)
+	r.Add(signedNote(t, friend, "friend post", time.Now()))
+	r.Add(signedNote(t, stranger, "stranger post", time.Now()))
+
+	posts, err := getFeedPosts(true)
+	if err != nil || len(posts) != 1 || posts[0].Content != "friend post" {
+		t.Fatalf("posts = %+v, %v", posts, err)
+	}
+}
+
+func TestE2ERepliesByNoteAndNevent(t *testing.T) {
+	r := startRelay(t)
+	hint := startRelay(t) // only reachable via the nevent hint
+	isolate(t, r.URL)
+	a, b := nostr.GeneratePrivateKey(), nostr.GeneratePrivateKey()
+	root := signedNote(t, a, "root", time.Now().Add(-time.Hour))
+	r.Add(root)
+	reply := signedNote(t, b, "a reply", time.Now())
+	reply.Tags = nostr.Tags{{"e", root.ID, "", "root"}}
+	_ = reply.Sign(b)
+	hint.Add(reply)
+
+	note, _ := nip19.EncodeNote(root.ID)
+	if got, err := getReactions(note); err != nil || len(got) != 0 {
+		t.Fatalf("without hint: %+v %v", got, err)
+	}
+	nevent, _ := nip19.EncodeEvent(root.ID, []string{hint.URL}, "")
+	got, err := getReactions(nevent)
+	if err != nil || len(got) != 1 || got[0].Content != "a reply" {
+		t.Fatalf("with nevent hint: %+v %v", got, err)
+	}
+}
+
+// TUI posts now get hashtag tags like CLI posts.
+func TestE2ETUIPostTagsHashtags(t *testing.T) {
+	r := startRelay(t)
+	isolate(t, r.URL)
+	useLocalKey(nostr.GeneratePrivateKey())
+	if err := publishPostTUI("hello #Nostr"); err != nil {
+		t.Fatal(err)
+	}
+	if evs := r.Events(); len(evs) != 1 || fmt.Sprint(evs[0].Tags) != fmt.Sprint(nostr.Tags{{"t", "nostr"}}) {
+		t.Fatalf("tags = %v", evs[0].Tags)
 	}
 }

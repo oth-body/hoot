@@ -76,3 +76,38 @@ func (m Model) handlePosted(msg postedMsg) (Model, tea.Cmd) {
 	}
 	return m, nil
 }
+
+// reloadFeed (re)loads the feed in its current mode.
+func (m *Model) reloadFeed() tea.Cmd {
+	m.feedPosts = nil
+	m.feedScroll = 0
+	m.message = ""
+	load := m.onLoadFeed
+	if m.feedFollowing && m.onLoadFollowingFeed != nil {
+		load = m.onLoadFollowingFeed
+	}
+	if load == nil {
+		m.feedLoading = false
+		return nil
+	}
+	m.feedLoading = true
+	return m.startLoad(ScreenFeed, load)
+}
+
+// openThread shows the replies and reactions to p, returning to from on Esc.
+func (m *Model) openThread(p FeedPost, from Screen) tea.Cmd {
+	if p.ID == "" || m.onLoadReplies == nil {
+		return nil
+	}
+	if m.threadPost == nil {
+		m.threadFrom = from
+	}
+	m.threadPost = &p
+	m.screen = ScreenReplies
+	m.replyPosts = nil
+	m.replyScroll = 0
+	m.replyLoading = true
+	m.message = ""
+	load, id := m.onLoadReplies, p.ID
+	return m.startLoad(ScreenReplies, func() ([]FeedPost, error) { return load(id) })
+}

@@ -5,9 +5,10 @@ import (
 	"strings"
 	"testing"
 
+	"hoot/nip46"
+
 	"github.com/charmbracelet/bubbles/spinner"
 	tea "github.com/charmbracelet/bubbletea"
-	"hoot/nip46"
 )
 
 // TestQRFlowsThroughLoginMenuEndToEnd drives the full path a real user

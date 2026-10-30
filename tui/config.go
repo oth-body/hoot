@@ -8,18 +8,21 @@ import (
 
 // Config holds all the callbacks for TUI operations
 type Config struct {
-	HasKey        func() bool
-	OnLoadKey     func(password string) (privateKey string, pubkey string, err error)
-	OnResetKey    func() error
-	OnLogin       func(nsec string, password string, save bool) (string, error)
-	OnPost        func(message string) error
-	OnLoadFeed    func() ([]FeedPost, error)
-	OnLoadDMs     func(privateKey string) ([]FeedPost, error)
-	OnLoadReplies func(eventID string) ([]FeedPost, error)
-	OnInitQR      func() (string, error)
-	OnCheckQR     func() (string, *nip46.ProfileMetadata, error)
-	OnLoadRelays  func() ([]string, error)
-	OnSaveRelays  func(relays []string) error
+	HasKey     func() bool
+	OnLoadKey  func(password string) (privateKey string, pubkey string, err error)
+	OnResetKey func() error
+	OnLogin    func(nsec string, password string, save bool) (string, error)
+	OnPost     func(message string) error
+	OnLoadFeed func() ([]FeedPost, error)
+	// OnLoadFollowingFeed loads posts from people the user follows (kind-3
+	// contact list). Optional: without it the feed is global-only.
+	OnLoadFollowingFeed func() ([]FeedPost, error)
+	OnLoadDMs           func(privateKey string) ([]FeedPost, error)
+	OnLoadReplies       func(eventID string) ([]FeedPost, error)
+	OnInitQR            func() (string, error)
+	OnCheckQR           func() (string, *nip46.ProfileMetadata, error)
+	OnLoadRelays        func() ([]string, error)
+	OnSaveRelays        func(relays []string) error
 	// Profile callbacks
 	OnListProfiles  func() ([]ProfileInfo, string, error)
 	OnSelectProfile func(id, password string) (privKey, pubKey string, err error)
@@ -41,6 +44,7 @@ func newModelFromConfig(cfg Config) Model {
 	m.onLogin = cfg.OnLogin
 	m.onPost = cfg.OnPost
 	m.onLoadFeed = cfg.OnLoadFeed
+	m.onLoadFollowingFeed = cfg.OnLoadFollowingFeed
 	m.onLoadDMs = cfg.OnLoadDMs
 	m.onLoadReplies = cfg.OnLoadReplies
 	m.onInitQR = cfg.OnInitQR

@@ -19,13 +19,7 @@ func (m Model) handleHomeEnter() (tea.Model, tea.Cmd) {
 		m.textInput.Focus()
 	case 1: // Feed
 		m.screen = ScreenFeed
-		m.feedPosts = nil
-		m.feedScroll = 0
-		m.message = ""
-		if m.onLoadFeed != nil {
-			m.feedLoading = true
-			return m, m.startLoad(ScreenFeed, m.onLoadFeed)
-		}
+		return m, m.reloadFeed()
 	case 2: // DMs
 		m.screen = ScreenDMs
 		m.dmPosts = nil
@@ -41,6 +35,7 @@ func (m Model) handleHomeEnter() (tea.Model, tea.Cmd) {
 		m.messageStyle = errorStyle
 	case 3: // Replies/Reactions
 		m.screen = ScreenReplies
+		m.threadPost = nil
 		m.replyLoading = false
 		m.replyPosts = nil
 		m.replyScroll = 0

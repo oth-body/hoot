@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+- Feed: shows author **names** (from their profiles, cached for a day) instead of hex keys, in the feed, DMs and replies.
+- Feed: **Following** mode: press `g` to switch between the global feed and posts from people you follow (your kind-3 contact list).
+- Feed: select a post with ↑/↓ and press **Enter to open its thread** (replies and reactions); Enter on a reply opens that thread; Esc goes back. The selected post's `note1…` ID is shown so you can copy it.
+- Replies lookup (TUI and `hoot -replies`) accepts `note1…`, `nevent1…` (its relay hints are queried too) and `nostr:` URIs, not just hex.
+- Posts from the TUI now tag `#hashtags` like `hoot -m`. Hashtag tags are lowercased and de-duplicated, and a bare `#` no longer creates an empty tag.
+- Long posts are truncated without breaking multi-byte characters.
 - TUI: the feed, DMs, replies and posting no longer freeze the screen. They run in the background with a spinner, a result that arrives after you've left the screen is discarded, and a failed post keeps your draft in the composer.
 - TUI: delete a saved profile from the login screen: highlight it, press `x`, confirm with `y`.
 - TUI: the last-used (★) profile is highlighted when the login screen opens.
