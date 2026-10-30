@@ -5,8 +5,8 @@ import (
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
-	"hoot/nip46"
 	"github.com/mattn/go-runewidth"
+	"hoot/nip46"
 )
 
 // TestQRVisualFitsTerminalWidth verifies the rendered QR code's visual

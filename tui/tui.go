@@ -11,8 +11,8 @@ import (
 	"github.com/charmbracelet/lipgloss"
 	"github.com/muesli/reflow/ansi"
 
-	"hoot/nip46"
 	"github.com/mdp/qrterminal/v3"
+	"hoot/nip46"
 )
 
 // Screen represents the current view
@@ -734,8 +734,8 @@ func (m *Model) regenerateQR() {
 	// terminal columns in half-block mode, blowing the QR out to 300+
 	// columns wide and overflowing any reasonable terminal.
 	config := qrterminal.Config{
-		Level:     qrterminal.L, // Lower error correction for smaller QR
-		Writer:    &sb,
+		Level:      qrterminal.L, // Lower error correction for smaller QR
+		Writer:     &sb,
 		HalfBlocks: true,
 		QuietZone:  1, // 1-module border; qrterminal enforces a minimum of 1
 	}
