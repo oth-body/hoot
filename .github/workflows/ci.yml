@@ -24,6 +24,12 @@ jobs:
       - name: Run tests
         run: go test -v -race -coverprofile=coverage.txt ./...
 
+      # Relay-backed end-to-end tests skip under -race because go-nostr
+      # v0.50's Relay.close() has a data race with its own connection
+      # goroutine (see startRelay in e2e_test.go). Run them here without it.
+      - name: Run end-to-end tests (in-process relay)
+        run: go test -v -count=1 -run 'E2E' ./...
+
       - name: Upload coverage
         uses: actions/upload-artifact@v4
         with:

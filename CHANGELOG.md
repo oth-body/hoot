@@ -8,6 +8,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 - Added a "Configure relays" option to the TUI login menu so relays can be reviewed, added, and removed before signing in — matters most for QR (NIP-46) pairing, which uses the configured relay set. Also wired up the relay screen's add/delete/navigate controls, which were present in the UI but not actually connected to any key handling.
+- #78: the home screen now actually renders the Amber profile's NIP-05 (with ✓) and about line; the fields were fetched in #79 but never drawn. With no kind-0 profile it shows a truncated npub instead of a hex prefix.
+- Feed: no longer stuck on cached posts. Once 20 events were cached, fresh posts were never shown until the cache expired. Relays are now queried first, the cache is only a fallback when they're unreachable, and posts are sorted newest first.
+- DMs: query relays for the user's own conversations (`#p` + `authors`) instead of the 50 newest DMs network-wide, and decrypt sent messages with the recipient's key, so sent DMs show up again.
+- Sessions: pressing Esc on the QR screen, or switching profile, now tears down the NIP-46 session. Before, a stale session could sign posts for the next login, and Esc dropped a logged-out user onto the Home menu. Ctrl+C now quits from every screen, and Esc inside the add-profile form goes back instead of quitting.
+- Profiles: creating a profile in the TUI now keeps its private key, so DMs work right away. Profiles migrated from the legacy key file get their pubkey filled in on first unlock, and a stored `nsec` is decoded properly, so signing works.
+- CLI: commands fall back to the last-used TUI profile when there is no legacy key file, instead of "No private key found".
+- Cache: the config directory is created on first run (previously the cache failed to open on a fresh install). Expiry is stored as Unix seconds, so entries actually expire and get cleaned up, and `GetProfile` no longer fails scanning `cached_at`.
+- Tests: an in-process relay (`internal/testrelay`) backs new end-to-end tests for posting, the feed, DMs, profile migration and the CLI binary. Relay-backed tests skip under `-race` because of a data race inside go-nostr v0.50's `Relay.close`; CI runs them in a separate non-race step.
 
 ## [0.3.0] - 2026-09-14
 
