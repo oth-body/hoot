@@ -116,15 +116,14 @@ func TestEscWhileLoggedOutNeverReachesHome(t *testing.T) {
 
 func TestEscInsideLoginSubformBacksOut(t *testing.T) {
 	m := NewModel()
-	m.addingProfile = true
-	m.cursor = 51
+	m.step = stepNsec
 	m.tempName = "x"
 	m, cmd := press(t, m, tea.KeyMsg{Type: tea.KeyEsc})
 	if isQuit(cmd) {
 		t.Fatal("esc inside the add-profile form quit the app")
 	}
-	if m.cursor != 0 || m.addingProfile || m.tempName != "" {
-		t.Fatalf("form not reset: cursor=%d adding=%v name=%q", m.cursor, m.addingProfile, m.tempName)
+	if m.step != stepMenu || m.tempName != "" {
+		t.Fatalf("form not reset: step=%d name=%q", m.step, m.tempName)
 	}
 	// At the top-level menu esc still quits.
 	if _, cmd := press(t, m, tea.KeyMsg{Type: tea.KeyEsc}); !isQuit(cmd) {
@@ -172,8 +171,7 @@ func TestAddProfileKeepsPrivateKeyForDMs(t *testing.T) {
 		OnAddProfile: func(name, nsec, pw string) (string, string, error) { return "sk-hex", "pk-hex", nil },
 		OnLoadDMs:    func(sk string) ([]FeedPost, error) { dmKey = sk; return nil, nil },
 	})
-	m.addingProfile = true
-	m.cursor = 100
+	m.step = stepNewPassword
 	m.tempName, m.tempNsec = "me", "nsec1whatever"
 	m.textInput.SetValue("pw")
 	m, _ = press(t, m, tea.KeyMsg{Type: tea.KeyEnter})
@@ -279,8 +277,7 @@ func TestLettersGoToFocusedTextField(t *testing.T) {
 			return "sk", "pk", nil
 		},
 	})
-	m.addingProfile = true
-	m.cursor = 100
+	m.step = stepNewPassword
 	m.tempName, m.tempNsec = "me", "nsec1whatever"
 	m.textInput.Focus()
 
@@ -288,8 +285,8 @@ func TestLettersGoToFocusedTextField(t *testing.T) {
 	for _, r := range pw {
 		m, _ = press(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
 	}
-	if m.cursor != 100 || m.textInput.Value() != pw {
-		t.Fatalf("form state broken by typing: cursor=%d value=%q", m.cursor, m.textInput.Value())
+	if m.step != stepNewPassword || m.textInput.Value() != pw {
+		t.Fatalf("form state broken by typing: step=%d value=%q", m.step, m.textInput.Value())
 	}
 	if resetCalls != 0 {
 		t.Fatal("typing 'r' deleted the stored key")
@@ -382,14 +379,85 @@ func TestAddProfileRequiresPassword(t *testing.T) {
 	m := newModelFromConfig(Config{
 		OnAddProfile: func(name, nsec, pw string) (string, string, error) { called = true; return "sk", "pk", nil },
 	})
-	m.addingProfile = true
-	m.cursor = 100
+	m.step = stepNewPassword
 	m.tempName, m.tempNsec = "me", "nsec1whatever"
 	if strings.Contains(m.View(), "skip saving") {
 		t.Fatal("prompt still offers to skip saving")
 	}
 	m, _ = press(t, m, tea.KeyMsg{Type: tea.KeyEnter})
-	if called || m.loggedIn || m.cursor != 100 || !strings.Contains(m.message, "choose a password") {
-		t.Fatalf("empty password accepted: called=%v loggedIn=%v cursor=%d msg=%q", called, m.loggedIn, m.cursor, m.message)
+	if called || m.loggedIn || m.step != stepNewPassword || !strings.Contains(m.message, "choose a password") {
+		t.Fatalf("empty password accepted: called=%v loggedIn=%v step=%d msg=%q", called, m.loggedIn, m.step, m.message)
+	}
+}
+
+func TestDeleteProfileWithConfirmation(t *testing.T) {
+	profiles := []ProfileInfo{{ID: "a", Name: "alice", PublicKey: strings.Repeat("a", 64)}, {ID: "b", Name: "bob", PublicKey: strings.Repeat("b", 64)}}
+	var deleted []string
+	m := newModelFromConfig(Config{
+		OnListProfiles: func() ([]ProfileInfo, string, error) { return profiles, "b", nil },
+		OnDeleteProfile: func(id string) error {
+			deleted = append(deleted, id)
+			var keep []ProfileInfo
+			for _, p := range profiles {
+				if p.ID != id {
+					keep = append(keep, p)
+				}
+			}
+			profiles = keep
+			return nil
+		},
+	})
+	if m.cursor != 1 {
+		t.Fatalf("last-used profile not highlighted at start: cursor=%d", m.cursor)
+	}
+	if !strings.Contains(m.View(), "x: delete") {
+		t.Fatal("delete hint missing")
+	}
+
+	// x then n: nothing deleted.
+	m, _ = press(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("x")})
+	if m.step != stepConfirmDelete || !strings.Contains(m.View(), `Delete profile "bob"?`) {
+		t.Fatalf("no confirmation: step=%d\n%s", m.step, m.View())
+	}
+	m, _ = press(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("n")})
+	if m.step != stepMenu || len(deleted) != 0 {
+		t.Fatal("n should cancel")
+	}
+
+	// x then Esc: cancels too, doesn't quit.
+	m, _ = press(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("x")})
+	m, cmd := press(t, m, tea.KeyMsg{Type: tea.KeyEsc})
+	if isQuit(cmd) || m.step != stepMenu || len(deleted) != 0 {
+		t.Fatal("esc should cancel the delete, not quit")
+	}
+
+	// x then y: bob deleted, list reloaded, cursor still valid.
+	m, _ = press(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("x")})
+	m, _ = press(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("y")})
+	if len(deleted) != 1 || deleted[0] != "b" || len(m.profiles) != 1 || !strings.Contains(m.message, `Deleted profile "bob"`) {
+		t.Fatalf("deleted=%v profiles=%v msg=%q", deleted, m.profiles, m.message)
+	}
+	if m.cursor >= len(m.loginMenuItems()) {
+		t.Fatalf("cursor %d out of range", m.cursor)
+	}
+
+	// x on a non-profile row does nothing.
+	m.cursor = len(m.profiles) // "+ Add new profile"
+	m, _ = press(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("x")})
+	if m.step != stepMenu {
+		t.Fatal("x on a non-profile row started a delete")
+	}
+}
+
+func TestLoginMenuNavigationBounds(t *testing.T) {
+	m := newModelFromConfig(Config{OnListProfiles: func() ([]ProfileInfo, string, error) {
+		return []ProfileInfo{{ID: "a", Name: "alice"}}, "", nil
+	}})
+	for i := 0; i < 10; i++ {
+		m, _ = press(t, m, tea.KeyMsg{Type: tea.KeyDown})
+	}
+	items := m.loginMenuItems()
+	if m.cursor != len(items)-1 || items[m.cursor].action != actRelays {
+		t.Fatalf("cursor=%d, want last item (relays)", m.cursor)
 	}
 }
