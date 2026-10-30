@@ -34,4 +34,3 @@ jobs:
           version: v1.25.0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          GOVERSION: "1.22"

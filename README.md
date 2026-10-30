@@ -24,7 +24,7 @@ A simple command-line tool for using the Nostr network. It keeps your keys safe,
 
 ## Prerequisites
 
-- Go 1.19 or later
+- Go 1.26 or later
 - Git
 
 ## Installation
