@@ -176,13 +176,12 @@ func TestSwitchProfileLogsOut(t *testing.T) {
 	}
 }
 
-// Creating a profile must leave the model holding the private key, or the
-// DMs screen reports "No private key available" right after signup.
-func TestAddProfileKeepsPrivateKeyForDMs(t *testing.T) {
-	var dmKey string
+// After creating a profile, DMs load straight away.
+func TestAddProfileThenDMs(t *testing.T) {
+	loaded := false
 	m := newModelFromConfig(Config{
 		OnAddProfile: func(name, nsec, pw string) (string, string, error) { return "sk-hex", "pk-hex", nil },
-		OnLoadDMs:    func(sk string) ([]FeedPost, error) { dmKey = sk; return nil, nil },
+		OnLoadDMs:    func() ([]FeedPost, error) { loaded = true; return nil, nil },
 	})
 	m.step = stepNewPassword
 	m.tempName, m.tempNsec = "me", "nsec1whatever"
@@ -194,8 +193,83 @@ func TestAddProfileKeepsPrivateKeyForDMs(t *testing.T) {
 	m.cursor = 2 // [d] View DMs
 	m, cmd := press(t, m, tea.KeyMsg{Type: tea.KeyEnter})
 	m, _ = run(t, m, cmd)
-	if dmKey != "sk-hex" {
-		t.Fatalf("DMs loaded with key %q; message=%q", dmKey, m.message)
+	if !loaded {
+		t.Fatalf("DMs not loaded; message=%q", m.message)
+	}
+}
+
+// Amber users (no local key) can open DMs too.
+func TestDMsLoadWithoutLocalKey(t *testing.T) {
+	m := newModelFromConfig(Config{OnLoadDMs: func() ([]FeedPost, error) {
+		return []FeedPost{{Author: strings.Repeat("a", 64), Peer: strings.Repeat("a", 64), AuthorName: "Ann", Content: "🔒 [DM from]: hi"}}, nil
+	}})
+	m.loggedIn, m.screen, m.privateKey = true, ScreenHome, ""
+	m, cmd := press(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("d")})
+	m, _ = run(t, m, cmd)
+	if !strings.Contains(m.View(), "🔒 [DM from]: hi") {
+		t.Fatalf("%s", m.View())
+	}
+}
+
+func TestComposeNewDM(t *testing.T) {
+	var to, text string
+	sent := 0
+	m := newModelFromConfig(Config{
+		OnLoadDMs: func() ([]FeedPost, error) { return nil, nil },
+		OnSendDM:  func(r, t string) error { to, text = r, t; sent++; return nil },
+	})
+	m.loggedIn, m.screen = true, ScreenDMs
+	m, _ = press(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("n")})
+	if m.screen != ScreenPost || !strings.Contains(m.View(), "To (npub") {
+		t.Fatalf("%s", m.View())
+	}
+	m = typeText(t, m, "npub1bogus")
+	m, _ = press(t, m, tea.KeyMsg{Type: tea.KeyEnter})
+	if !strings.Contains(m.message, "isn't valid") {
+		t.Fatalf("bad npub accepted: %q", m.message)
+	}
+	pk := strings.Repeat("ab", 32)
+	npub, _ := nip19.EncodePublicKey(pk)
+	m.textInput.SetValue(npub)
+	m, _ = press(t, m, tea.KeyMsg{Type: tea.KeyEnter})
+	if !strings.Contains(m.View(), "end-to-end encrypted") {
+		t.Fatalf("%s", m.View())
+	}
+	m = typeText(t, m, "hello there")
+	m, cmd := press(t, m, tea.KeyMsg{Type: tea.KeyEnter})
+	m, cmd = run(t, m, cmd) // sent → reload DMs
+	if sent != 1 || to != pk || text != "hello there" || m.screen != ScreenDMs || !strings.Contains(m.message, "DM sent") {
+		t.Fatalf("sent=%d to=%s text=%q screen=%v msg=%q", sent, to, text, m.screen, m.message)
+	}
+	m, _ = run(t, m, cmd)
+}
+
+func TestReplyToDMAndEsc(t *testing.T) {
+	var to string
+	peer := strings.Repeat("c", 64)
+	m := newModelFromConfig(Config{
+		OnLoadDMs: func() ([]FeedPost, error) {
+			return []FeedPost{{Author: peer, Peer: peer, AuthorName: "Cat", Content: "🔒 [DM from]: yo"}}, nil
+		},
+		OnSendDM: func(r, _ string) error { to = r; return nil },
+	})
+	m.loggedIn, m.screen = true, ScreenHome
+	m, cmd := press(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("d")})
+	m, _ = run(t, m, cmd)
+	m, _ = press(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("r")})
+	if !strings.Contains(m.View(), "To: Cat") {
+		t.Fatalf("%s", m.View())
+	}
+	m, _ = press(t, m, tea.KeyMsg{Type: tea.KeyEsc})
+	if m.screen != ScreenDMs || m.composingDM() {
+		t.Fatalf("esc: screen=%v", m.screen)
+	}
+	m, _ = press(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("r")})
+	m = typeText(t, m, "back at you")
+	m, cmd = press(t, m, tea.KeyMsg{Type: tea.KeyEnter})
+	m, _ = run(t, m, cmd)
+	if to != peer {
+		t.Fatalf("sent to %q", to)
 	}
 }
 

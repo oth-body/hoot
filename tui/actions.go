@@ -118,6 +118,45 @@ func (m *Model) leaveCompose() {
 		m.screen = m.tipReturn
 		m.zapPost = nil
 		m.resetTipForm()
+	case m.composingDM():
+		m.screen = ScreenDMs
+		m.dmTo, m.dmToLabel, m.dmAskRecipient = "", "", false
 	}
 	m.textInput.Reset()
 }
+
+// DM composing (on the DMs screen): n starts a new message, r replies to the
+// selected conversation.
+
+// handleDMKey handles n / r on the DMs screen. It reports whether it
+// consumed the key.
+func (m Model) handleDMKey(key string) (Model, bool) {
+	if m.onSendDM == nil || (key != "n" && key != "r") {
+		return m, false
+	}
+	m.message = ""
+	m.screen = ScreenPost
+	m.textInput.Reset()
+	m.textInput.Focus()
+	if key == "n" {
+		m.dmTo, m.dmToLabel = "", ""
+		m.dmAskRecipient = true
+		m.textInput.Placeholder = "npub1... or hex public key"
+		return m, true
+	}
+	if m.dmScroll >= len(m.dmPosts) || m.dmPosts[m.dmScroll].Peer == "" {
+		m.screen = ScreenDMs
+		return m, true
+	}
+	p := m.dmPosts[m.dmScroll]
+	m.dmTo = p.Peer
+	m.dmToLabel = shortNpub(p.Peer)
+	if p.Author == p.Peer && p.AuthorName != "" {
+		m.dmToLabel = p.AuthorName
+	}
+	m.textInput.Placeholder = "Write a private message..."
+	return m, true
+}
+
+// composingDM reports whether the composer is writing a DM.
+func (m Model) composingDM() bool { return m.dmAskRecipient || m.dmTo != "" }

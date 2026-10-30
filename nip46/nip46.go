@@ -2,6 +2,8 @@ package nip46
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -724,54 +726,93 @@ func (s *Session) FetchProfile(ctx context.Context, userPubKey string) (*Profile
 	return &meta, nil
 }
 
-// GetPublicKey requests the user's public key from the signer.
+// GetPublicKey asks the signer for the user's public key.
 func (s *Session) GetPublicKey(ctx context.Context) (string, error) {
-	req := Request{
-		ID:     fmt.Sprintf("%d", time.Now().UnixNano()),
-		Method: "get_public_key",
-		Params: []interface{}{},
+	pk, err := s.call(ctx, "get_public_key")
+	if err != nil {
+		return "", err
 	}
+	if !nostr.IsValid32ByteHex(pk) {
+		return "", fmt.Errorf("signer returned an invalid public key %q", pk)
+	}
+	s.UserPublicKey = pk
+	return pk, nil
+}
 
-	resp, err := s.sendRequest(ctx, req)
+// call sends a NIP-46 request and returns its result, or the signer's error.
+func (s *Session) call(ctx context.Context, method string, params ...string) (string, error) {
+	ps := make([]interface{}, len(params))
+	for i, p := range params {
+		ps[i] = p
+	}
+	resp, err := s.sendRequest(ctx, Request{ID: newRequestID(), Method: method, Params: ps})
 	if err != nil {
 		return "", err
 	}
 	if resp.Error != "" {
 		return "", fmt.Errorf("signer error: %s", resp.Error)
 	}
-
-	s.UserPublicKey = resp.Result
 	return resp.Result, nil
 }
 
-// SignEvent requests the signer to sign an event
+func newRequestID() string {
+	b := make([]byte, 8)
+	if _, err := rand.Read(b); err != nil {
+		return fmt.Sprintf("%d", time.Now().UnixNano())
+	}
+	return hex.EncodeToString(b)
+}
+
+// Encrypt44 / Decrypt44 / Encrypt04 / Decrypt04 ask the signer to encrypt
+// or decrypt with the user's key (NIP-46 nip44_* / nip04_* methods), so DMs
+// work without the private key on this machine.
+func (s *Session) Encrypt44(ctx context.Context, peer, plaintext string) (string, error) {
+	return s.call(ctx, "nip44_encrypt", peer, plaintext)
+}
+
+func (s *Session) Decrypt44(ctx context.Context, peer, ciphertext string) (string, error) {
+	return s.call(ctx, "nip44_decrypt", peer, ciphertext)
+}
+
+func (s *Session) Encrypt04(ctx context.Context, peer, plaintext string) (string, error) {
+	return s.call(ctx, "nip04_encrypt", peer, plaintext)
+}
+
+func (s *Session) Decrypt04(ctx context.Context, peer, ciphertext string) (string, error) {
+	return s.call(ctx, "nip04_decrypt", peer, ciphertext)
+}
+
+// SignEvent asks the signer to sign event and checks the result: same
+// content, the user's key, and a valid signature.
 func (s *Session) SignEvent(ctx context.Context, event *nostr.Event) error {
+	if event.PubKey == "" {
+		event.PubKey = s.UserPublicKey
+	}
 	eventJSON, err := json.Marshal(event)
 	if err != nil {
 		return err
 	}
-
-	req := Request{
-		ID:     fmt.Sprintf("%d", time.Now().UnixNano()),
-		Method: "sign_event",
-		Params: []interface{}{string(eventJSON)},
-	}
-
-	resp, err := s.sendRequest(ctx, req)
+	result, err := s.call(ctx, "sign_event", string(eventJSON))
 	if err != nil {
 		return err
 	}
-	if resp.Error != "" {
-		return fmt.Errorf("signer error: %s", resp.Error)
-	}
-
-	var signedEvent nostr.Event
-	if err := json.Unmarshal([]byte(resp.Result), &signedEvent); err != nil {
+	var signed nostr.Event
+	if err := json.Unmarshal([]byte(result), &signed); err != nil {
 		return fmt.Errorf("failed to parse signed event: %w", err)
 	}
-
-	event.ID = signedEvent.ID
-	event.Sig = signedEvent.Sig
+	if s.UserPublicKey != "" && signed.PubKey != s.UserPublicKey {
+		return fmt.Errorf("signer signed with a different key")
+	}
+	if signed.Content != event.Content || signed.Kind != event.Kind || signed.CreatedAt != event.CreatedAt {
+		return fmt.Errorf("signer returned a different event than requested")
+	}
+	if ok, _ := signed.CheckSignature(); !ok {
+		return fmt.Errorf("signer returned an invalid signature")
+	}
+	event.PubKey = signed.PubKey
+	event.Tags = signed.Tags
+	event.ID = signed.ID
+	event.Sig = signed.Sig
 	return nil
 }
 
@@ -804,12 +845,9 @@ func (s *Session) sendRequest(ctx context.Context, req Request) (*Response, erro
 	}
 	event.Sign(s.ClientPrivateKey)
 
-	// Publish to every connected relay.
-	if err := s.publishToAllRelays(ctx, &event); err != nil {
-		return nil, fmt.Errorf("failed to publish request: %w", err)
-	}
-
-	// Subscribe on every relay for the response.
+	// Subscribe for the response *before* publishing the request: kind
+	// 24133 is ephemeral, so relays don't store it, and a fast signer's
+	// reply sent before we subscribed would be lost (seen as a timeout).
 	filter := nostr.Filter{
 		Kinds:   []int{24133},
 		Authors: []string{s.SignerPublicKey},
@@ -856,6 +894,10 @@ func (s *Session) sendRequest(ctx context.Context, req Request) (*Response, erro
 	}
 	defer closeSubs()
 
+	if err := s.publishToAllRelays(ctx, &event); err != nil {
+		return nil, fmt.Errorf("failed to publish request: %w", err)
+	}
+
 	timeout := time.After(30 * time.Second)
 	for {
 		select {
@@ -871,7 +913,10 @@ func (s *Session) sendRequest(ctx context.Context, req Request) (*Response, erro
 			if err := json.Unmarshal([]byte(decrypted), &resp); err != nil {
 				continue
 			}
-			if resp.ID == req.ID || strings.HasPrefix(resp.Result, "{") || resp.Error != "" {
+			// Only our own response: with several requests in flight
+			// (e.g. decrypting a page of DMs), accepting any response
+			// would hand one request's result to another.
+			if resp.ID == req.ID {
 				return &resp, nil
 			}
 

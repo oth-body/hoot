@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+- **Private DMs (NIP-17).** Read and send gift-wrapped messages (shown with 🔒) alongside legacy NIP-04 DMs. Messages go to the recipient's DM inbox relays (kind 10050) when they've published them. In the TUI DMs screen: `n` new message, `r` reply. From the CLI: `hoot -dm <npub> -m "text"`.
+- **DMs work with Amber.** Decryption and encryption go through the remote signer (NIP-46 `nip04_*`/`nip44_*`), so no private key is needed on this computer. Only the newest messages are decrypted, since each one is a round trip to the phone.
+- NIP-46 fixes: hoot subscribes for the signer's reply *before* sending a request (replies are ephemeral, so a fast signer's answer could be missed), and only accepts the response matching the request ID (concurrent requests could receive each other's results). Signed events returned by the signer are verified.
 - Feed and threads: act on the selected post. **`r` reply** (NIP-10 threading: root/reply markers, everyone in the thread tagged), **`+` like** (NIP-25), **`z` zap**. Esc cancels a reply or zap and returns to the list; replying inside a thread reloads it so your reply shows up.
 - **Zaps (NIP-57):** if the recipient's Lightning address supports Nostr zaps, hoot attaches a signed zap request, so the zap appears on Nostr against the post. Otherwise it's sent as a plain tip and hoot says so. Works with both local keys and Amber.
 - CLI `-dms` / `-replies` show author names instead of hex prefixes when known.

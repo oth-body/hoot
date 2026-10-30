@@ -58,6 +58,7 @@ type FeedPost struct {
 	Kind       int
 	Author     string // hex pubkey
 	AuthorName string // display name from the author's profile, if known
+	Peer       string // DMs: the other party's hex pubkey
 	Content    string
 	CreatedAt  string
 }
@@ -142,7 +143,7 @@ type Model struct {
 	onLoadFeed func() ([]FeedPost, error)
 	// onLoadFollowingFeed loads posts from people the user follows.
 	onLoadFollowingFeed func() ([]FeedPost, error)
-	onLoadDMs           func(privateKey string) ([]FeedPost, error)
+	onLoadDMs           func() ([]FeedPost, error)
 	onLoadReplies       func(eventID string) ([]FeedPost, error)
 	onInitQR            func() (string, error)
 	onCheckQR           func() (string, *nip46.ProfileMetadata, error)
@@ -166,6 +167,12 @@ type Model struct {
 	onReply func(parentID, content string) error
 	onReact func(eventID string) error
 	onZap   func(pubkey, eventID string, sats int64) (string, error)
+
+	onSendDM func(recipientHex, text string) error
+
+	dmTo           string // composer is writing a DM to this hex pubkey
+	dmToLabel      string
+	dmAskRecipient bool // composer is asking who to DM
 
 	replyTo     *FeedPost // composer is replying to this post
 	replyReturn Screen    // where to go after the reply
@@ -295,6 +302,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return nm, cmd
 			}
 		}
+		if m.screen == ScreenDMs {
+			if nm, ok := m.handleDMKey(key); ok {
+				return nm, nil
+			}
+		}
 		if m.screen == ScreenFeed && key == "g" && m.onLoadFollowingFeed != nil {
 			m.feedFollowing = !m.feedFollowing
 			return m, m.reloadFeed()
@@ -342,7 +354,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.message = ""
 				return m, nil
 			}
-			if (m.screen == ScreenPost && m.replyTo != nil) || (m.screen == ScreenTip && m.zapPost != nil && !m.tipping) {
+			if (m.screen == ScreenPost && (m.replyTo != nil || m.composingDM())) || (m.screen == ScreenTip && m.zapPost != nil && !m.tipping) {
 				// Cancel a reply or zap: back to the list, not Home.
 				m.leaveCompose()
 				m.message = ""

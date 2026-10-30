@@ -25,14 +25,11 @@ func (m Model) handleHomeEnter() (tea.Model, tea.Cmd) {
 		m.dmPosts = nil
 		m.dmScroll = 0
 		m.message = ""
-		if m.onLoadDMs != nil && m.privateKey != "" {
+		if m.onLoadDMs != nil {
+			// Works with a local key or a remote signer (Amber decrypts).
 			m.dmLoading = true
-			load, sk := m.onLoadDMs, m.privateKey
-			return m, m.startLoad(ScreenDMs, func() ([]FeedPost, error) { return load(sk) })
+			return m, m.startLoad(ScreenDMs, m.onLoadDMs)
 		}
-		m.dmLoading = false
-		m.message = "No private key available for decrypting DMs"
-		m.messageStyle = errorStyle
 	case 3: // Replies/Reactions
 		m.screen = ScreenReplies
 		m.threadPost = nil

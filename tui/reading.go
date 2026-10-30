@@ -136,6 +136,14 @@ func (m Model) viewDMs() string {
 	default:
 		renderPostList(&b, m.dmPosts, m.dmScroll, "messages")
 	}
+	if m.onSendDM != nil {
+		b.WriteString("\n")
+		help := "n new message"
+		if len(m.dmPosts) > 0 {
+			help = "↑/↓ select · r reply · " + help
+		}
+		b.WriteString(menuStyle.Render(help))
+	}
 	return b.String()
 }
 
