@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-10-30
+
+Hoot becomes a day-to-day Nostr client. Highlights: a feed with names, threads and reply/like/zap; private DMs (NIP-17), including with Amber; remembered Amber sessions; NIP-57 zaps; and an in-house relay client that fixes a crash-capable race and queries relays in parallel. **Requires Go 1.26 to build.**
+
 - New `hoot -set key=value` (repeatable) changes individual profile fields and keeps everything else, including fields hoot doesn't know about. An empty value removes a field; the changes are printed before publishing. (`-u` still replaces the whole profile, and its help text now says so.)
 - **Amber sessions are remembered.** After pairing, the login screen offers "📱 Continue as NAME (Amber)", which reconnects without a QR scan (approve on the phone if Amber asks). `x` on it forgets the saved session. The pairing is stored in `amber_session.json` (0600). It lets this computer *ask* Amber to sign; to fully revoke, also remove Hoot in Amber.
 - Wallet connect (NIP-47) uses **NIP-44** encryption when the wallet advertises `nip44_v2` in its info event, and NIP-04 otherwise (older wallets).
