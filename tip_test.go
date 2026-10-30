@@ -17,6 +17,7 @@ import (
 	"github.com/nbd-wtf/go-nostr"
 	"github.com/nbd-wtf/go-nostr/nip04"
 	"github.com/nbd-wtf/go-nostr/nip19"
+	"github.com/nbd-wtf/go-nostr/nip44"
 )
 
 func TestBolt11AmountMsat(t *testing.T) {
@@ -67,6 +68,18 @@ type tipFixture struct {
 	lnurlFailure string       // non-empty → LNURL returns status ERROR
 	allowsNostr  bool         // NIP-57 support advertised by the LNURL server
 	zapRequest   atomic.Value // the raw "nostr" query param of the last callback
+	lastScheme   atomic.Value // encryption used by the last NWC request
+}
+
+// advertise publishes the wallet's NIP-47 info event listing schemes.
+func (f *tipFixture) advertise(t *testing.T, schemes string) {
+	t.Helper()
+	pk, _ := nostr.GetPublicKey(f.walletSK)
+	ev := &nostr.Event{PubKey: pk, CreatedAt: nostr.Now(), Kind: 13194, Content: "pay_invoice", Tags: nostr.Tags{{"encryption", schemes}}}
+	if err := ev.Sign(f.walletSK); err != nil {
+		t.Fatal(err)
+	}
+	f.relay.Add(ev)
 }
 
 func newTipFixture(t *testing.T) *tipFixture {
@@ -133,8 +146,22 @@ func newTipFixture(t *testing.T) *tipFixture {
 		if p := ev.Tags.GetFirst([]string{"p"}); p == nil || (*p)[1] != walletPK {
 			return
 		}
+		// NIP-47: the request's "encryption" tag says which scheme it
+		// used; the reply uses the same one.
 		ss, _ := nip04.ComputeSharedSecret(ev.PubKey, f.walletSK)
-		plain, err := nip04.Decrypt(ev.Content, ss)
+		ck, _ := nip44.GenerateConversationKey(ev.PubKey, f.walletSK)
+		scheme := "nip04"
+		if t := ev.Tags.GetFirst([]string{"encryption"}); t != nil && (*t)[1] == "nip44_v2" {
+			scheme = "nip44_v2"
+		}
+		f.lastScheme.Store(scheme)
+		var plain string
+		var err error
+		if scheme == "nip44_v2" {
+			plain, err = nip44.Decrypt(ev.Content, ck)
+		} else {
+			plain, err = nip04.Decrypt(ev.Content, ss)
+		}
 		if err != nil {
 			return
 		}
@@ -154,7 +181,12 @@ func newTipFixture(t *testing.T) *tipFixture {
 			return
 		}
 		b, _ := json.Marshal(reply)
-		ct, _ := nip04.Encrypt(string(b), ss)
+		var ct string
+		if scheme == "nip44_v2" {
+			ct, _ = nip44.Encrypt(string(b), ck)
+		} else {
+			ct, _ = nip04.Encrypt(string(b), ss)
+		}
 		resp := &nostr.Event{
 			PubKey: walletPK, CreatedAt: nostr.Now(), Kind: 23195,
 			Tags: nostr.Tags{{"p", ev.PubKey}, {"e", ev.ID}}, Content: ct,
@@ -354,5 +386,26 @@ func TestE2EZapFallsBackToPlainTip(t *testing.T) {
 	}
 	if res.Zapped || f.zapRequest.Load() != "" {
 		t.Fatalf("zapped=%v nostr param=%v", res.Zapped, f.zapRequest.Load())
+	}
+}
+
+// NIP-47: a wallet that advertises nip44_v2 gets NIP-44 requests; one with
+// no info event (older wallets) gets NIP-04.
+func TestE2ENWCEncryptionNegotiation(t *testing.T) {
+	f := newTipFixture(t)
+	if _, err := tipUser(context.Background(), f.address, 21, nil); err != nil {
+		t.Fatal(err)
+	}
+	if got := f.lastScheme.Load(); got != "nip04" {
+		t.Fatalf("no info event: scheme = %v", got)
+	}
+
+	f.advertise(t, "nip44_v2 nip04")
+	res, err := tipUser(context.Background(), f.address, 21, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := f.lastScheme.Load(); got != "nip44_v2" || res.Preimage == "" {
+		t.Fatalf("nip44 wallet: scheme = %v, result %+v", got, res)
 	}
 }
