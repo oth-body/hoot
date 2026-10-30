@@ -42,8 +42,17 @@ func Start() *Relay {
 	return r
 }
 
-// Close shuts the relay down.
-func (r *Relay) Close() { r.srv.Close() }
+// Close shuts the relay down, dropping every connected client (as a relay
+// going offline would). httptest.Server.Close alone leaves hijacked
+// websocket connections open.
+func (r *Relay) Close() {
+	r.mu.Lock()
+	for c := range r.subs {
+		_ = c.CloseNow()
+	}
+	r.mu.Unlock()
+	r.srv.Close()
+}
 
 // Events returns a snapshot of every stored event.
 func (r *Relay) Events() []*nostr.Event {
@@ -155,8 +164,10 @@ func (r *Relay) serve(w http.ResponseWriter, req *http.Request) {
 				_ = send("OK", ev.ID, false, "invalid: bad signature")
 				continue
 			}
-			_ = send("OK", ev.ID, true, "")
+			// Store (and fan out) before acknowledging, like a real relay:
+			// a client that saw OK must be able to query the event.
 			r.Publish(&ev)
+			_ = send("OK", ev.ID, true, "")
 			if r.OnEvent != nil {
 				go r.OnEvent(&ev)
 			}

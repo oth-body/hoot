@@ -52,17 +52,8 @@ func isolate(t *testing.T, relays ...string) string {
 }
 
 // startRelay starts an in-process relay for the test.
-//
-// Relay-backed tests skip under -race: go-nostr v0.50's Relay.close() reads
-// r.Connection while the library's own connection goroutine sets it to nil
-// (still present upstream, which is deprecated in favour of
-// fiatjaf.com/nostr). Every relay disconnect can trip the detector no matter
-// what hoot does. CI runs these tests in a separate non-race step.
 func startRelay(t *testing.T) *testrelay.Relay {
 	t.Helper()
-	if raceDetector {
-		t.Skip("skipped under -race: upstream go-nostr Relay.close data race; run without -race")
-	}
 	r := testrelay.Start()
 	t.Cleanup(r.Close)
 	return r

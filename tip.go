@@ -18,6 +18,8 @@ import (
 	"strings"
 	"time"
 
+	"hoot/internal/relay"
+
 	"github.com/nbd-wtf/go-nostr"
 	"github.com/nbd-wtf/go-nostr/nip04"
 	"github.com/nbd-wtf/go-nostr/nip19"
@@ -451,13 +453,13 @@ func payInvoiceNWC(ctx context.Context, conn *nwcConn, invoice string) (*nwcPayR
 	ctx, cancel := context.WithTimeout(ctx, nwcResponseTimeout)
 	defer cancel()
 
-	relay, err := nostr.RelayConnect(ctx, conn.Relay)
+	rl, err := relay.Connect(ctx, conn.Relay)
 	if err != nil {
 		return nil, fmt.Errorf("failed to connect to NWC relay %s: %w", conn.Relay, err)
 	}
-	defer relay.Close()
+	defer rl.Close()
 
-	sub, err := relay.Subscribe(ctx, nostr.Filters{{
+	sub, err := rl.Subscribe(ctx, nostr.Filters{{
 		Kinds:   []int{23195},
 		Authors: []string{conn.WalletPubKey},
 		Tags:    nostr.TagMap{"e": []string{req.ID}},
@@ -465,9 +467,9 @@ func payInvoiceNWC(ctx context.Context, conn *nwcConn, invoice string) (*nwcPayR
 	if err != nil {
 		return nil, fmt.Errorf("failed to subscribe for wallet response: %w", err)
 	}
-	defer sub.Unsub()
+	defer sub.Close()
 
-	if err := relay.Publish(ctx, req); err != nil {
+	if err := rl.Publish(ctx, req); err != nil {
 		return nil, fmt.Errorf("failed to send payment request to wallet relay: %w", err)
 	}
 

@@ -7,6 +7,7 @@ import (
 	"flag"
 	"fmt"
 	"hoot/cache"
+	"hoot/internal/relay"
 	"hoot/nip46"
 	"hoot/tui"
 	"log"
@@ -640,44 +641,16 @@ func generateProfileID() string {
 	return fmt.Sprintf("%x", b)
 }
 
-// listPosts queries posts (kind 1 events) and prints the last 4 posts.
+// listPosts prints the user's 4 newest notes across all relays.
 func listPosts(pubKey string) {
-	// Use relay list from file or default.
-	relays := getRelayList()
-	filter := nostr.Filter{
-		Authors: []string{pubKey},
-		Kinds:   []int{1},
-		Limit:   4,
-	}
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-
-	var events []nostr.Event
-	for _, url := range relays {
-		relay, err := nostr.RelayConnect(ctx, url)
-		if err != nil {
-			log.Printf("Error connecting to relay %s: %v", url, err)
-			continue
-		}
-		// Use QueryEvents passing a single filter (not a slice)
-		evCh, err := relay.QueryEvents(ctx, filter)
-		if err != nil {
-			log.Printf("Error querying relay %s: %v", url, err)
-			relay.Close()
-			continue
-		}
-		// Iterate over the returned channel
-	loop:
-		for ev := range evCh {
-			events = append(events, *ev)
-			if len(events) >= 4 {
-				break loop
-			}
-		}
-		relay.Close()
-		if len(events) >= 4 {
-			break
-		}
+	events, failures := relay.QueryAll(ctx, getRelayList(), nostr.Filter{Authors: []string{pubKey}, Kinds: []int{1}, Limit: 4})
+	for url, err := range failures {
+		log.Printf("Error querying relay %s: %v", url, err)
+	}
+	if len(events) > 4 {
+		events = events[:4]
 	}
 	fmt.Println("Last 4 posts from your profile:")
 	for _, ev := range events {
@@ -717,27 +690,11 @@ func newestFirst(events []*nostr.Event, limit int) []*nostr.Event {
 	return out
 }
 
-// queryRelays runs each filter against each relay in turn (sequentially,
-// like the rest of hoot) and returns every event received before EOSE or
-// ctx expiry. Unreachable relays are skipped. Callers de-duplicate.
+// queryRelays queries every relay in parallel and returns the union of
+// matching events (de-duplicated, newest first). Unreachable relays are
+// skipped.
 func queryRelays(ctx context.Context, relays []string, filters ...nostr.Filter) []*nostr.Event {
-	var events []*nostr.Event
-	for _, url := range relays {
-		relay, err := nostr.RelayConnect(ctx, url)
-		if err != nil {
-			continue
-		}
-		for _, f := range filters {
-			evCh, err := relay.QueryEvents(ctx, f)
-			if err != nil {
-				continue
-			}
-			for ev := range evCh {
-				events = append(events, ev)
-			}
-		}
-		relay.Close()
-	}
+	events, _ := relay.QueryAll(ctx, relays, filters...)
 	return events
 }
 
@@ -889,8 +846,6 @@ func publishPostTUI(content string) error {
 	event.CreatedAt = nostr.Now()
 	event.Tags = nostr.Tags{}
 
-	relays := getRelayList()
-
 	// If NIP-46 session is active, use it
 	if nip46Session != nil {
 		event.PubKey = nip46Session.UserPublicKey
@@ -913,67 +868,26 @@ func publishPostTUI(content string) error {
 		}
 	}
 
-	success := 0
-	for _, url := range relays {
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		relay, err := nostr.RelayConnect(ctx, url)
-		if err != nil {
-			cancel()
-			continue
-		}
-		if err := relay.Publish(ctx, event); err == nil {
-			success++
-		}
-		relay.Close()
-		cancel()
-	}
-
-	if success == 0 {
-		return fmt.Errorf("failed to publish to any relay")
-	}
-	return nil
-}
-
-// getProfile queries for a kind 0 (profile) event.
-func getProfile(pubKey string) {
-	// Use relay list from file or default.
-	relays := getRelayList()
-	filter := nostr.Filter{
-		Authors: []string{pubKey},
-		Kinds:   []int{0},
-		Limit:   1,
-	}
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
+	_, _, err = relay.PublishAll(ctx, getRelayList(), event)
+	return err
+}
 
-	var profileEvent *nostr.Event
-	for _, url := range relays {
-		relay, err := nostr.RelayConnect(ctx, url)
-		if err != nil {
-			log.Printf("Error connecting to relay %s: %v", url, err)
-			continue
-		}
-		evCh, err := relay.QueryEvents(ctx, filter)
-		if err != nil {
+// getProfile prints the newest kind 0 (profile) event for pubKey.
+func getProfile(pubKey string) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	events, failures := relay.QueryAll(ctx, getRelayList(), nostr.Filter{Authors: []string{pubKey}, Kinds: []int{0}, Limit: 1})
+	if len(events) == 0 {
+		for url, err := range failures {
 			log.Printf("Error querying relay %s: %v", url, err)
-			relay.Close()
-			continue
 		}
-		for ev := range evCh {
-			profileEvent = ev
-			break
-		}
-		relay.Close()
-		if profileEvent != nil {
-			break
-		}
-	}
-	if profileEvent == nil {
 		fmt.Println("Profile not found")
 		return
 	}
 	fmt.Println("Your profile:")
-	fmt.Println(profileEvent.Content)
+	fmt.Println(events[0].Content)
 }
 
 // editProfile publishes a new kind 0 (profile) event with the updated profile info.
@@ -988,21 +902,30 @@ func editProfile(privateKey, newContent, pubKey string, relays []string) {
 	if err := event.Sign(privateKey); err != nil {
 		log.Fatalf("Failed to sign profile event: %v", err)
 	}
-	ctx := context.Background()
-	pool := nostr.NewSimplePool(ctx)
-	for _, relayURL := range relays {
-		r, err := pool.EnsureRelay(relayURL)
-		if err != nil {
-			log.Printf("Failed to add relay %s: %v", relayURL, err)
-			continue
-		}
-		err = r.Publish(ctx, event)
-		if err == nil {
-			fmt.Printf("Successfully published profile update to relay: %s\n", r.URL)
-		} else {
-			fmt.Printf("Failed to publish to relay %s: %v\n", r.URL, err)
-		}
+	if err := publishAndReport(relays, event, "profile update"); err != nil {
+		log.Printf("Profile update failed: %v", err)
 	}
+}
+
+// publishAndReport publishes ev to relays in parallel and prints one line
+// per relay. It returns an error only if no relay accepted the event.
+func publishAndReport(relays []string, ev nostr.Event, what string) error {
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	accepted, failures, err := relay.PublishAll(ctx, relays, ev)
+	for _, u := range accepted {
+		fmt.Printf("Successfully published %s to relay: %s\n", what, u)
+	}
+	for u, ferr := range failures {
+		fmt.Printf("Failed to publish to relay %s: %v\n", u, ferr)
+	}
+	if err != nil {
+		return fmt.Errorf("%w (%d attempted)", err, len(failures))
+	}
+	if len(failures) > 0 {
+		fmt.Printf("Published to %d relay(s); %d failed\n", len(accepted), len(failures))
+	}
+	return nil
 }
 
 // registerAsHandler registers the app as a handler for specific kinds.
@@ -1029,25 +952,7 @@ func registerAsHandler(privateKey, publicKey string, kinds []int, platforms map[
 		return fmt.Errorf("failed to sign handler registration event: %w", err)
 	}
 
-	// Publish the event to relays
-	ctx := context.Background()
-	relays := getRelayList()
-	pool := nostr.NewSimplePool(ctx)
-	for _, relayURL := range relays {
-		relay, err := pool.EnsureRelay(relayURL)
-		if err != nil {
-			log.Printf("Failed to connect to relay %s: %v", relayURL, err)
-			continue
-		}
-		defer relay.Close()
-
-		if err := relay.Publish(ctx, event); err != nil {
-			log.Printf("Failed to publish to relay %s: %v", relay.URL, err)
-		} else {
-			fmt.Printf("Handler registration published to relay: %s\n", relay.URL)
-		}
-	}
-	return nil
+	return publishAndReport(getRelayList(), event, "handler registration")
 }
 
 // recommendApp publishes a recommendation for an app for a specific kind.
@@ -1069,84 +974,46 @@ func recommendApp(privateKey, publicKey, handlerPubKey, handlerDIdentifier strin
 		return fmt.Errorf("failed to sign app recommendation event: %w", err)
 	}
 
-	// Publish the event to relays
-	ctx := context.Background()
-	relays := getRelayList()
-	pool := nostr.NewSimplePool(ctx)
-	for _, relayURL := range relays {
-		relay, err := pool.EnsureRelay(relayURL)
-		if err != nil {
-			log.Printf("Failed to connect to relay %s: %v", relayURL, err)
-			continue
-		}
-		defer relay.Close()
-
-		if err := relay.Publish(ctx, event); err != nil {
-			log.Printf("Failed to publish to relay %s: %v", relay.URL, err)
-		} else {
-			fmt.Printf("App recommendation published to relay: %s\n", relay.URL)
-		}
-	}
-	return nil
+	return publishAndReport(getRelayList(), event, "app recommendation")
 }
 
-// findHandlers queries relays for handlers of a specific kind.
+// findHandlers queries relays for NIP-89 handlers of a specific kind.
 func findHandlers(kind int) ([]struct {
 	PubKey         string
 	SupportedKinds []int
 	Platforms      map[string]string
 }, error) {
-	// Use relay list from file or default
-	relays := getRelayList()
-	filter := nostr.Filter{
-		Kinds: []int{31990},
-		Tags:  nostr.TagMap{"k": []string{fmt.Sprintf("%d", kind)}},
-	}
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
+	events, _ := relay.QueryAll(ctx, getRelayList(), nostr.Filter{
+		Kinds: []int{31990},
+		Tags:  nostr.TagMap{"k": []string{fmt.Sprintf("%d", kind)}},
+	})
 
 	var handlers []struct {
 		PubKey         string
 		SupportedKinds []int
 		Platforms      map[string]string
 	}
-
-	for _, url := range relays {
-		relay, err := nostr.RelayConnect(ctx, url)
-		if err != nil {
-			log.Printf("Error connecting to relay %s: %v", url, err)
-			continue
+	for _, ev := range events {
+		handler := struct {
+			PubKey         string
+			SupportedKinds []int
+			Platforms      map[string]string
+		}{
+			PubKey:    ev.PubKey,
+			Platforms: make(map[string]string),
 		}
-		defer relay.Close()
-
-		evCh, err := relay.QueryEvents(ctx, filter)
-		if err != nil {
-			log.Printf("Error querying relay %s: %v", url, err)
-			continue
-		}
-
-		for ev := range evCh {
-			handler := struct {
-				PubKey         string
-				SupportedKinds []int
-				Platforms      map[string]string
-			}{
-				PubKey:    ev.PubKey,
-				Platforms: make(map[string]string),
-			}
-
-			for _, tag := range ev.Tags {
-				if len(tag) > 1 && tag[0] == "k" {
-					kind, err := strconv.Atoi(tag[1])
-					if err == nil {
-						handler.SupportedKinds = append(handler.SupportedKinds, kind)
-					}
-				} else if len(tag) > 2 && tag[0] == "p" {
-					handler.Platforms[tag[1]] = tag[2]
+		for _, tag := range ev.Tags {
+			if len(tag) > 1 && tag[0] == "k" {
+				if k, err := strconv.Atoi(tag[1]); err == nil {
+					handler.SupportedKinds = append(handler.SupportedKinds, k)
 				}
+			} else if len(tag) > 2 && tag[0] == "p" {
+				handler.Platforms[tag[1]] = tag[2]
 			}
-			handlers = append(handlers, handler)
 		}
+		handlers = append(handlers, handler)
 	}
 	return handlers, nil
 }
@@ -1770,46 +1637,9 @@ func main() {
 	}
 }
 
-// publishNote publishes a signed event to all configured relays and
-// returns an error if no relay accepted the event. Mirrors the success-
-// counting pattern from publishPostTUI so the caller can distinguish
-// "all relays failed" from "some relays succeeded".
+// publishNote publishes a signed event to all relays in parallel, printing
+// a line per relay, and returns an error if no relay accepted it.
 func publishNote(ctx context.Context, relays []string, event nostr.Event) error {
-	pool := nostr.NewSimplePool(ctx)
-	for _, relayURL := range relays {
-		relay, err := pool.EnsureRelay(relayURL)
-		if err != nil {
-			log.Printf("Failed to add relay %s: %v", relayURL, err)
-			continue
-		}
-		// Close each relay when this function returns. Note: deferring
-		// inside a loop defers to function-exit (not loop-iteration), so
-		// all closes fire at once. That's fine — the SimplePool's own
-		// cleanup would do the same thing on program exit anyway.
-		defer relay.Close()
-	}
-
-	success := 0
-	failed := 0
-	pool.Relays.Range(func(key string, relay *nostr.Relay) bool {
-		err := relay.Publish(ctx, event)
-		if err == nil {
-			success++
-			fmt.Printf("Successfully published to relay: %s\n", relay.URL)
-		} else {
-			failed++
-			fmt.Printf("Failed to publish to relay %s: %v\n", relay.URL, err)
-		}
-		return true
-	})
-
-	if success == 0 {
-		return fmt.Errorf("failed to publish to any relay (%d attempted, %d failed)", len(relays), failed)
-	}
-	if failed > 0 {
-		// Partial success is still a successful outcome (the event is
-		// on the network), but tell the caller some relays rejected it.
-		fmt.Printf("Published to %d relay(s); %d failed\n", success, failed)
-	}
-	return nil
+	_ = ctx // publishAndReport applies its own timeout
+	return publishAndReport(relays, event, "note")
 }
