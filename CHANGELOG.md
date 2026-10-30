@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+- Security: bumped `golang.org/x/crypto` v0.33.0 → v0.58.0 and `golang.org/x/sys` v0.37.0 → v0.49.0 (plus `term`, `text`, `net`, `sync`), clearing the known advisories govulncheck reported against those versions (GO-2025-3487, GO-2025-4116, GO-2025-4134/4135, GO-2026-5005…5033, GO-2026-6303, GO-2026-6354/6355). None were reachable from hoot's code, but they were all in the build.
+- Hoot now requires **Go 1.26** (x/crypto ≥ v0.56 needs it; Go 1.24 no longer receives security fixes). `toolchain go1.26.10` pins a patched compiler for builds and releases.
+- CI: new `vulncheck` job. `govulncheck ./...` (reachable code) fails the build; a module-wide scan posts its findings as a check annotation.
 - Added a "Configure relays" option to the TUI login menu so relays can be reviewed, added, and removed before signing in — matters most for QR (NIP-46) pairing, which uses the configured relay set. Also wired up the relay screen's add/delete/navigate controls, which were present in the UI but not actually connected to any key handling.
 - #78: the home screen now actually renders the Amber profile's NIP-05 (with ✓) and about line; the fields were fetched in #79 but never drawn. With no kind-0 profile it shows a truncated npub instead of a hex prefix.
 - Feed: no longer stuck on cached posts. Once 20 events were cached, fresh posts were never shown until the cache expired. Relays are now queried first, the cache is only a fallback when they're unreachable, and posts are sorted newest first.
