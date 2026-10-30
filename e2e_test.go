@@ -746,3 +746,93 @@ func TestE2EAmberDMs(t *testing.T) {
 		t.Fatalf("friend's DMs = %+v, %v", dms, err)
 	}
 }
+
+// pairWithSigner sets up a fake Amber for userSK on relay r and makes it the
+// active session, as a successful QR pairing would.
+func pairWithSigner(t *testing.T, relayURL, userSK string) *testsigner.Signer {
+	t.Helper()
+	for _, v := range []string{"HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy", "ALL_PROXY", "all_proxy", "SOCKS_PROXY", "socks_proxy", "SOCKS5_PROXY", "socks5_proxy"} {
+		t.Setenv(v, "")
+	}
+	signer, err := testsigner.Start(relayURL, userSK)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(signer.Close)
+	_, sess, err := nip46.GenerateConnectURI([]string{relayURL}, "test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	sess.RelayURLs = []string{relayURL}
+	if err := sess.ConnectRelays(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	sess.SignerPublicKey = signer.PubKey
+	sess.UserPublicKey = signer.UserPubKey
+	nip46Session = sess
+	return signer
+}
+
+// A paired Amber session is saved (0600) and can be resumed in a "new
+// process" without a QR scan; it can then sign. Forget removes it.
+func TestE2EAmberSessionSaveResumeForget(t *testing.T) {
+	r := startRelay(t)
+	isolate(t, r.URL)
+	userSK := nostr.GeneratePrivateKey()
+	signer := pairWithSigner(t, r.URL, userSK)
+
+	if err := saveAmberSession(nip46Session, "Owl"); err != nil {
+		t.Fatal(err)
+	}
+	if fi, err := os.Stat(amberSessionPath()); err != nil || fi.Mode().Perm() != 0600 {
+		t.Fatalf("session file: %v %v", fi, err)
+	}
+	if label, ok := savedAmberLabel(); !ok || label != "Owl" {
+		t.Fatalf("label = %q %v", label, ok)
+	}
+
+	// New process: no active session.
+	endRemoteSession()
+	pk, _, err := resumeAmber()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if pk != signer.UserPubKey || nip46Session == nil {
+		t.Fatalf("resumed as %s", pk)
+	}
+	if err := publishPostTUI("posted after resume"); err != nil {
+		t.Fatal(err)
+	}
+	if evs := r.Events(); len(evs) == 0 || evs[len(evs)-1].PubKey != signer.UserPubKey {
+		t.Fatal("post not signed by the resumed session")
+	}
+
+	if err := forgetAmberSession(); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := savedAmberLabel(); ok {
+		t.Fatal("session still saved after forget")
+	}
+	if _, _, err := resumeAmber(); err == nil {
+		t.Fatal("resumed a forgotten session")
+	}
+}
+
+func TestE2EAmberResumeFailsClearlyWhenSignerOffline(t *testing.T) {
+	r := startRelay(t)
+	isolate(t, r.URL)
+	signer := pairWithSigner(t, r.URL, nostr.GeneratePrivateKey())
+	if err := saveAmberSession(nip46Session, ""); err != nil {
+		t.Fatal(err)
+	}
+	endRemoteSession()
+	signer.Close() // phone offline
+
+	old := amberResumeTimeout
+	amberResumeTimeout = 2 * time.Second
+	t.Cleanup(func() { amberResumeTimeout = old })
+	_, _, err := resumeAmber()
+	if err == nil || !strings.Contains(err.Error(), "Amber didn't answer") || nip46Session != nil {
+		t.Fatalf("err = %v, session = %v", err, nip46Session)
+	}
+}

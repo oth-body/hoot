@@ -37,6 +37,10 @@ type Config struct {
 	// OnZap zaps a post's author (NIP-57, falling back to a plain tip) and
 	// returns a one-line summary.
 	OnZap func(pubkey, eventID string, sats int64) (string, error)
+	// Saved Amber session: label for the login menu, reconnect, forget.
+	OnSavedAmber  func() (string, bool)
+	OnResumeAmber func() (string, *nip46.ProfileMetadata, error)
+	OnForgetAmber func() error
 	// OnSendDM sends a private (NIP-17) DM.
 	OnSendDM func(recipientHex, text string) error
 	// OnTip pays a tip (see Model.onTip).
@@ -69,6 +73,10 @@ func newModelFromConfig(cfg Config) Model {
 	m.onReact = cfg.OnReact
 	m.onZap = cfg.OnZap
 	m.onSendDM = cfg.OnSendDM
+	m.onSavedAmber = cfg.OnSavedAmber
+	m.onResumeAmber = cfg.OnResumeAmber
+	m.onForgetAmber = cfg.OnForgetAmber
+	m.refreshSavedAmber()
 	m.onTip = cfg.OnTip
 
 	// Load profiles on startup

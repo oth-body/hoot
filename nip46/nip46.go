@@ -39,6 +39,30 @@ type Request struct {
 	Params []interface{} `json:"params"`
 }
 
+// ResumeSession rebuilds a session for a signer that was paired earlier,
+// reusing the same client key so the signer recognises it (no new QR scan).
+// Call ConnectRelays, then GetPublicKey to confirm the signer still answers.
+func ResumeSession(clientSK, signerPK, userPK string, relayURLs []string) (*Session, error) {
+	clientPK, err := nostr.GetPublicKey(clientSK)
+	if err != nil {
+		return nil, fmt.Errorf("invalid saved client key: %w", err)
+	}
+	if !nostr.IsValid32ByteHex(signerPK) {
+		return nil, fmt.Errorf("invalid saved signer key")
+	}
+	relays := dedupStrings(relayURLs)
+	if len(relays) == 0 {
+		return nil, fmt.Errorf("saved session has no relays")
+	}
+	return &Session{
+		ClientPrivateKey: clientSK,
+		ClientPublicKey:  clientPK,
+		SignerPublicKey:  signerPK,
+		UserPublicKey:    userPK,
+		RelayURLs:        relays,
+	}, nil
+}
+
 type Response struct {
 	ID     string `json:"id"`
 	Result string `json:"result,omitempty"`
