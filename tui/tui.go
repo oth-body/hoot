@@ -12,6 +12,7 @@ import (
 	"github.com/muesli/reflow/ansi"
 
 	"github.com/mdp/qrterminal/v3"
+	"github.com/nbd-wtf/go-nostr/nip19"
 	"hoot/nip46"
 )
 
@@ -143,8 +144,14 @@ type Model struct {
 	// Profile callbacks
 	onListProfiles  func() ([]ProfileInfo, string, error) // returns profiles + lastUsedID
 	onSelectProfile func(id, password string) (privKey, pubKey string, err error)
-	onAddProfile    func(name, nsec, password string) (pubKey string, err error)
+	onAddProfile    func(name, nsec, password string) (privKey, pubKey string, err error)
 	onDeleteProfile func(id string) error
+
+	// onLogout tears down whatever signing session the host process holds
+	// (a NIP-46 remote-signer session and/or a cached local private key).
+	// Called on "Switch Profile" and when the user backs out of the QR
+	// screen, so a stale session can never sign events for the next login.
+	onLogout func()
 }
 
 // NewModel creates a new TUI model
@@ -229,7 +236,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case tea.KeyMsg:
 		switch msg.String() {
-		case "ctrl+c", "esc":
+		case "ctrl+c":
+			// The footer promises "Ctrl+C to quit" on every screen.
+			// Previously ctrl+c shared the esc branch and only went back.
+			return m, tea.Quit
+
+		case "esc":
 			if m.screen == ScreenRelays && m.addingRelay {
 				// Cancel just the "new relay" sub-form, not the whole screen.
 				m.addingRelay = false
@@ -238,11 +250,33 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, nil
 			}
 			if m.screen == ScreenLogin {
+				if m.cursor >= 50 {
+					// Inside a sub-form (profile name / nsec / password):
+					// back out to the menu instead of quitting the app.
+					m.cursor = 0
+					m.addingProfile = false
+					m.tempName, m.tempNsec = "", ""
+					m.textInput.Reset()
+					m.textInput.EchoMode = textinput.EchoNormal
+					m.message = ""
+					return m, nil
+				}
 				return m, tea.Quit
 			}
-			if m.screen == ScreenRelays && !m.loggedIn {
-				// Relays were opened from the login menu (no session yet),
-				// so there is no Home screen to return to.
+			if m.screen == ScreenQRLogin {
+				// Abandon the pairing attempt. Previously esc fell through
+				// to "go Home", dropping an unauthenticated user onto the
+				// home menu with a half-initialised NIP-46 session that
+				// publishPostTUI would then try (and fail) to sign with.
+				m.logout()
+				m.screen = ScreenLogin
+				m.cursor = 0
+				m.message = ""
+				return m, nil
+			}
+			if !m.loggedIn {
+				// Relays (or any other screen) opened from the login menu:
+				// there is no Home screen to return to.
 				m.screen = ScreenLogin
 				m.cursor = 0
 				m.message = ""
@@ -373,6 +407,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 
 	case qrSuccessMsg:
+		if m.screen != ScreenQRLogin {
+			// A check that was already in flight when the user pressed
+			// esc. The session was torn down; don't log them in.
+			return m, nil
+		}
+		m.privateKey = "" // remote signer: no local key
+		m.currentProfileID = ""
 		m.publicKey = msg.pubkey
 		m.loggedIn = true
 		m.screen = ScreenHome
@@ -383,6 +424,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// is nil — many users haven't set a profile), fall back
 		// to a friendly "Logged in" message and let viewHome
 		// render the npub.
+		m.currentProfileName = ""
+		m.currentProfileAbout = ""
+		m.currentProfileNIP05 = ""
 		if msg.profile != nil && msg.profile.Name != "" {
 			m.currentProfileName = msg.profile.Name
 			m.message = fmt.Sprintf("Logged in as %s", msg.profile.Name)
@@ -430,7 +474,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		})
 
 	case checkQRTickMsg:
-		// Fired by the retry timer above — run another check.
+		// Fired by the retry timer above — run another check, unless the
+		// user has since left the QR screen (esc), in which case the
+		// polling loop ends here.
+		if m.screen != ScreenQRLogin {
+			return m, nil
+		}
 		return m, m.checkQRConnection
 	}
 
@@ -533,6 +582,8 @@ func (m Model) handleLoginEnter() (tea.Model, tea.Cmd) {
 				m.publicKey = pubKey
 				m.currentProfileID = profile.ID
 				m.currentProfileName = profile.Name
+				m.currentProfileAbout = ""
+				m.currentProfileNIP05 = ""
 				m.loggedIn = true
 				m.screen = ScreenHome
 				m.message = ""
@@ -613,7 +664,7 @@ func (m Model) handleLoginEnter() (tea.Model, tea.Cmd) {
 			password := m.textInput.Value()
 
 			if m.onAddProfile != nil {
-				pubKey, err := m.onAddProfile(m.tempName, m.tempNsec, password)
+				privKey, pubKey, err := m.onAddProfile(m.tempName, m.tempNsec, password)
 				if err != nil {
 					m.message = fmt.Sprintf("Failed to add profile: %v", err)
 					m.messageStyle = errorStyle
@@ -621,8 +672,11 @@ func (m Model) handleLoginEnter() (tea.Model, tea.Cmd) {
 					m.addingProfile = false
 					return m, nil
 				}
+				m.privateKey = privKey
 				m.publicKey = pubKey
 				m.currentProfileName = m.tempName
+				m.currentProfileAbout = ""
+				m.currentProfileNIP05 = ""
 
 				// Reload profiles
 				if m.onListProfiles != nil {
@@ -845,9 +899,11 @@ func (m Model) handleHomeEnter() (tea.Model, tea.Cmd) {
 			}
 		}
 	case 6: // Switch Profile
-		// Go back to login screen to select a different profile
+		// Go back to login screen to select a different profile.
+		// logout() also tears down the host's signing session so the
+		// previous account can't sign posts for the next one.
+		m.logout()
 		m.screen = ScreenLogin
-		m.loggedIn = false
 		m.cursor = 0
 		m.textInput.Reset()
 		// Reload profiles list
@@ -1202,10 +1258,23 @@ func (m Model) viewHome() string {
 	// Show current profile name if set
 	if m.currentProfileName != "" {
 		b.WriteString(menuStyle.Render(fmt.Sprintf(" - %s", m.currentProfileName)))
-	} else if m.publicKey != "" && len(m.publicKey) >= 16 {
-		b.WriteString(menuStyle.Render(fmt.Sprintf(" - %s...", m.publicKey[:16])))
+	} else if npub := shortNpub(m.publicKey); npub != "" {
+		b.WriteString(menuStyle.Render(" - " + npub))
 	}
-	b.WriteString("\n\n")
+	b.WriteString("\n")
+	// Kind-0 metadata from the Amber/NIP-46 login (#78). Rendered dim,
+	// under the title. NIP-05 gets a ✓ so it reads as an identity at a
+	// glance. Both are single-lined and truncated so a long bio can't
+	// push the menu off a small terminal.
+	if m.currentProfileNIP05 != "" {
+		b.WriteString(menuStyle.Render("✓ " + oneLine(m.currentProfileNIP05, 60)))
+		b.WriteString("\n")
+	}
+	if m.currentProfileAbout != "" {
+		b.WriteString(menuStyle.Render(oneLine(m.currentProfileAbout, 72)))
+		b.WriteString("\n")
+	}
+	b.WriteString("\n")
 
 	menuItems := []string{
 		"[p] Post a message",
@@ -1493,12 +1562,61 @@ type Config struct {
 	// Profile callbacks
 	OnListProfiles  func() ([]ProfileInfo, string, error)
 	OnSelectProfile func(id, password string) (privKey, pubKey string, err error)
-	OnAddProfile    func(name, nsec, password string) (pubKey string, err error)
+	OnAddProfile    func(name, nsec, password string) (privKey, pubKey string, err error)
 	OnDeleteProfile func(id string) error
+	// OnLogout clears the host's signing state (see Model.onLogout).
+	OnLogout func()
 }
 
-// Run starts the TUI with the given configuration
-func Run(cfg Config) error {
+// logout clears all login state in the model and asks the host process to
+// drop its signing session.
+func (m *Model) logout() {
+	if m.onLogout != nil {
+		m.onLogout()
+	}
+	m.loggedIn = false
+	m.privateKey = ""
+	m.publicKey = ""
+	m.currentProfileID = ""
+	m.currentProfileName = ""
+	m.currentProfileAbout = ""
+	m.currentProfileNIP05 = ""
+	m.qrData = ""
+	m.qrRendered = ""
+	m.qrReady = false
+}
+
+// shortNpub renders a hex pubkey as a truncated npub ("npub1abcdefg…uvwxyz").
+// Falls back to a hex prefix if the key can't be encoded, and to "" for an
+// empty key.
+func shortNpub(hexPub string) string {
+	if hexPub == "" {
+		return ""
+	}
+	npub, err := nip19.EncodePublicKey(hexPub)
+	if err != nil || len(npub) < 20 {
+		if len(hexPub) > 16 {
+			return hexPub[:16] + "..."
+		}
+		return hexPub
+	}
+	return npub[:12] + "…" + npub[len(npub)-6:]
+}
+
+// oneLine collapses whitespace (including newlines) and truncates to max
+// runes, appending an ellipsis when it cuts.
+func oneLine(s string, max int) string {
+	s = strings.Join(strings.Fields(s), " ")
+	r := []rune(s)
+	if len(r) > max {
+		return string(r[:max-1]) + "…"
+	}
+	return s
+}
+
+// newModelFromConfig builds a Model wired to cfg's callbacks. Split out of
+// Run so tests can drive the exact model the real program uses.
+func newModelFromConfig(cfg Config) Model {
 	m := NewModel()
 	m.hasKey = cfg.HasKey
 	m.onLoadKey = cfg.OnLoadKey
@@ -1516,6 +1634,7 @@ func Run(cfg Config) error {
 	m.onSelectProfile = cfg.OnSelectProfile
 	m.onAddProfile = cfg.OnAddProfile
 	m.onDeleteProfile = cfg.OnDeleteProfile
+	m.onLogout = cfg.OnLogout
 
 	// Load profiles on startup
 	if m.onListProfiles != nil {
@@ -1533,6 +1652,12 @@ func Run(cfg Config) error {
 		}
 	}
 
+	return m
+}
+
+// Run starts the TUI with the given configuration
+func Run(cfg Config) error {
+	m := newModelFromConfig(cfg)
 	p := tea.NewProgram(m, tea.WithAltScreen())
 	_, err := p.Run()
 	return err

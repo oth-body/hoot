@@ -15,6 +15,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"sort"
 	"strconv"
 	"strings"
 	"syscall"
@@ -74,6 +75,23 @@ func init() {
 // Global NIP-46 session and local key
 var nip46Session *nip46.Session
 var localPrivateKey string
+
+// endRemoteSession closes and forgets any NIP-46 session. publishPostTUI
+// prefers nip46Session over localPrivateKey, so a session left over from an
+// abandoned QR attempt (or a previous Amber login) would otherwise hijack
+// signing for a local-key login.
+func endRemoteSession() {
+	if nip46Session != nil {
+		nip46Session.Close()
+		nip46Session = nil
+	}
+}
+
+// useLocalKey switches the process to signing with a local hex key.
+func useLocalKey(sk string) {
+	endRemoteSession()
+	localPrivateKey = sk
+}
 
 // Global cache instance for improved performance
 var eventCache *cache.Cache
@@ -251,6 +269,10 @@ func decryptKey(storedKey *StoredKey, password []byte) ([]byte, error) {
 	derivedKey, err := deriveKey(password, storedKey.Salt)
 	if err != nil {
 		return nil, err
+	}
+
+	if len(storedKey.EncryptedKey) < 24+secretbox.Overhead {
+		return nil, fmt.Errorf("stored key is corrupt (too short)")
 	}
 
 	// Prepare nonce and secret key
@@ -432,7 +454,36 @@ func DeleteProfile(id string) error {
 	return SaveProfiles(store)
 }
 
-// UnlockProfile unlocks a profile with the given password and returns the private key
+// normalizePrivKey accepts a private key as either nsec or 64-char hex and
+// returns it as hex. Keys stored via the CLI (`hoot -s -k nsec1...`) are
+// saved verbatim, so anything that decrypts a stored key must go through
+// this before signing.
+func normalizePrivKey(key string) (string, error) {
+	key = strings.TrimSpace(key)
+	if strings.HasPrefix(key, "nsec") {
+		_, decoded, err := nip19.Decode(key)
+		if err != nil {
+			return "", fmt.Errorf("invalid nsec: %w", err)
+		}
+		sk, ok := decoded.(string)
+		if !ok {
+			return "", fmt.Errorf("invalid nsec payload")
+		}
+		return sk, nil
+	}
+	if !nostr.IsValid32ByteHex(key) {
+		return "", fmt.Errorf("stored key is neither nsec nor 64-char hex")
+	}
+	return key, nil
+}
+
+// UnlockProfile unlocks a profile with the given password and returns the
+// private key (always hex) and public key.
+//
+// Profiles created by MigrateLegacyKey have no PublicKey (it can't be
+// derived without the password) and may hold an nsec rather than hex. Both
+// are fixed up here on first unlock, and the derived pubkey is persisted so
+// the login screen can show it next time.
 func UnlockProfile(id, password string) (privateKey string, publicKey string, err error) {
 	store, err := LoadProfiles()
 	if err != nil {
@@ -457,11 +508,24 @@ func UnlockProfile(id, password string) (privateKey string, publicKey string, er
 		return "", "", err
 	}
 
-	// Update last used
-	store.LastUsedProfile = id
-	SaveProfiles(store)
+	sk, err := normalizePrivKey(string(decrypted))
+	if err != nil {
+		return "", "", err
+	}
+	pk, err := nostr.GetPublicKey(sk)
+	if err != nil {
+		return "", "", fmt.Errorf("failed to derive public key: %w", err)
+	}
+	profile.PublicKey = pk
 
-	return string(decrypted), profile.PublicKey, nil
+	// Update last used (and persist the backfilled pubkey). Best-effort:
+	// failing to write profiles.json shouldn't block login.
+	store.LastUsedProfile = id
+	if err := SaveProfiles(store); err != nil {
+		log.Printf("Warning: failed to save profiles: %v", err)
+	}
+
+	return sk, pk, nil
 }
 
 // GetProfileList returns a list of all profiles for display
@@ -525,6 +589,25 @@ func MigrateLegacyKey() error {
 	}
 
 	return SaveProfiles(store)
+}
+
+// defaultProfileID picks the profile the CLI should use when there is no
+// legacy key file: the last-used profile, or the only profile if there is
+// exactly one. Returns "" if there is no unambiguous choice.
+func defaultProfileID() string {
+	store, err := LoadProfiles()
+	if err != nil || len(store.Profiles) == 0 {
+		return ""
+	}
+	if _, ok := store.Profiles[store.LastUsedProfile]; ok {
+		return store.LastUsedProfile
+	}
+	if len(store.Profiles) == 1 {
+		for id := range store.Profiles {
+			return id
+		}
+	}
+	return ""
 }
 
 // generateProfileID creates a unique profile ID. Uses crypto/rand.Read
@@ -591,152 +674,173 @@ func listPosts(pubKey string) {
 	}
 }
 
-// getFeedPosts returns posts from the global feed for TUI display
-func getFeedPosts() ([]tui.FeedPost, error) {
-	// Try to get cached events first
-	var cachedEvents []*nostr.Event
-	if eventCache != nil {
-		// Get the most recent cached events
-		cachedEvents, _ = eventCache.GetEventsByPubKey("", 1, 20)
+// feedLimit is how many posts the feed screen shows.
+const feedLimit = 20
+
+// eventToFeedPost converts a Nostr event to the TUI's display struct.
+func eventToFeedPost(ev *nostr.Event) tui.FeedPost {
+	return tui.FeedPost{
+		Author:    ev.PubKey,
+		Content:   ev.Content,
+		CreatedAt: time.Unix(int64(ev.CreatedAt), 0).Format("Jan 2 15:04"),
 	}
+}
 
-	relays := getRelayList()
-	filter := nostr.Filter{
-		Kinds: []int{1},
-		Limit: 20,
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-
-	var posts []tui.FeedPost
-	var eventIDs = make(map[string]bool)
-
-	// First, add cached posts if available
-	for _, ev := range cachedEvents {
-		if !eventIDs[ev.ID] {
-			eventIDs[ev.ID] = true
-			posts = append(posts, tui.FeedPost{
-				Author:    ev.PubKey,
-				Content:   ev.Content,
-				CreatedAt: time.Unix(int64(ev.CreatedAt), 0).Format("Jan 2 15:04"),
-			})
+// newestFirst sorts events by created_at descending, de-duplicates by ID,
+// and truncates to limit.
+func newestFirst(events []*nostr.Event, limit int) []*nostr.Event {
+	seen := make(map[string]bool, len(events))
+	out := events[:0:0]
+	for _, ev := range events {
+		if ev == nil || seen[ev.ID] {
+			continue
 		}
+		seen[ev.ID] = true
+		out = append(out, ev)
 	}
+	sort.SliceStable(out, func(i, j int) bool { return out[i].CreatedAt > out[j].CreatedAt })
+	if limit > 0 && len(out) > limit {
+		out = out[:limit]
+	}
+	return out
+}
 
-	// Query relays for fresh data
+// queryRelays runs each filter against each relay in turn (sequentially,
+// like the rest of hoot) and returns every event received before EOSE or
+// ctx expiry. Unreachable relays are skipped. Callers de-duplicate.
+func queryRelays(ctx context.Context, relays []string, filters ...nostr.Filter) []*nostr.Event {
+	var events []*nostr.Event
 	for _, url := range relays {
 		relay, err := nostr.RelayConnect(ctx, url)
 		if err != nil {
 			continue
 		}
-		evCh, err := relay.QueryEvents(ctx, filter)
-		if err != nil {
-			relay.Close()
-			continue
-		}
-		for ev := range evCh {
-			// Cache the event for future use (24 hour TTL)
-			if eventCache != nil {
-				eventCache.StoreEvent(ev, 24*time.Hour)
+		for _, f := range filters {
+			evCh, err := relay.QueryEvents(ctx, f)
+			if err != nil {
+				continue
 			}
-
-			if !eventIDs[ev.ID] {
-				eventIDs[ev.ID] = true
-				posts = append(posts, tui.FeedPost{
-					Author:    ev.PubKey,
-					Content:   ev.Content,
-					CreatedAt: time.Unix(int64(ev.CreatedAt), 0).Format("Jan 2 15:04"),
-				})
-			}
-			if len(posts) >= 20 {
-				break
+			for ev := range evCh {
+				events = append(events, ev)
 			}
 		}
 		relay.Close()
-		if len(posts) >= 20 {
-			break
+	}
+	return events
+}
+
+// getFeedPosts returns the newest global kind-1 posts for TUI display.
+//
+// Relays are queried first; the local cache is only a fallback for when no
+// relay answers. Previously cached events were inserted first and the loop
+// stopped at 20 posts, so once the cache held 20 events the feed showed the
+// same stale posts for the full 24h TTL and never displayed anything new.
+func getFeedPosts() ([]tui.FeedPost, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	events := queryRelays(ctx, getRelayList(), nostr.Filter{Kinds: []int{1}, Limit: feedLimit})
+	if eventCache != nil {
+		for _, ev := range events {
+			_ = eventCache.StoreEvent(ev, 24*time.Hour)
 		}
+		if len(events) == 0 {
+			cached, _ := eventCache.GetEventsByPubKey("", 1, feedLimit)
+			events = cached
+		}
+	}
+
+	var posts []tui.FeedPost
+	for _, ev := range newestFirst(events, feedLimit) {
+		posts = append(posts, eventToFeedPost(ev))
 	}
 	return posts, nil
 }
 
-// getDMs returns direct messages for TUI display
+// dmLimit caps how many DMs are fetched and shown.
+const dmLimit = 50
+
+// dmFilters returns the two filters needed to see a user's whole NIP-04
+// conversation history: messages they received (#p) and messages they sent
+// (authors). The previous single filter {kinds:[4], limit:50} asked relays
+// for the 50 newest DMs *on the whole network* and then discarded the ones
+// that didn't involve the user — which in practice was nearly all of them.
+func dmFilters(publicKey string) []nostr.Filter {
+	return []nostr.Filter{
+		{Kinds: []int{4}, Tags: nostr.TagMap{"p": []string{publicKey}}, Limit: dmLimit},
+		{Kinds: []int{4}, Authors: []string{publicKey}, Limit: dmLimit},
+	}
+}
+
+// decryptDM turns a kind-4 event into a display post if it involves the
+// user. NIP-04's shared secret is ECDH(our privkey, *the other party's*
+// pubkey): for an incoming DM that's the author, for an outgoing DM it's the
+// p-tagged recipient. The old code always used the author, so the user's own
+// sent messages could never be decrypted and silently vanished.
+func decryptDM(ev *nostr.Event, privateKey, publicKey string) (tui.FeedPost, bool) {
+	var recipient string
+	if p := ev.Tags.GetFirst([]string{"p"}); p != nil && len(*p) > 1 {
+		recipient = (*p)[1]
+	}
+
+	var counterparty, label string
+	switch {
+	case ev.PubKey == publicKey:
+		if recipient == "" {
+			return tui.FeedPost{}, false
+		}
+		counterparty = recipient
+		label = "to " + shortKey(recipient)
+	case recipient == publicKey:
+		counterparty = ev.PubKey
+		label = "from"
+	default:
+		return tui.FeedPost{}, false
+	}
+
+	ss, err := nip04.ComputeSharedSecret(counterparty, privateKey)
+	if err != nil {
+		return tui.FeedPost{}, false
+	}
+	plain, err := nip04.Decrypt(ev.Content, ss)
+	if err != nil {
+		return tui.FeedPost{}, false
+	}
+	return tui.FeedPost{
+		Author:    ev.PubKey,
+		Content:   fmt.Sprintf("[DM %s]: %s", label, plain),
+		CreatedAt: time.Unix(int64(ev.CreatedAt), 0).Format("Jan 2 15:04"),
+	}, true
+}
+
+// shortKey returns the first 8 chars of a key followed by "...", without
+// panicking on short input.
+func shortKey(k string) string {
+	if len(k) > 8 {
+		return k[:8] + "..."
+	}
+	return k
+}
+
+// getDMs returns the user's NIP-04 direct messages (sent and received),
+// newest first.
 func getDMs(privateKey string) ([]tui.FeedPost, error) {
-	// Derive public key from private key
 	publicKey, err := nostr.GetPublicKey(privateKey)
 	if err != nil {
 		return nil, fmt.Errorf("failed to derive public key: %w", err)
 	}
 
-	relays := getRelayList()
-	filter := nostr.Filter{
-		Kinds: []int{4}, // DMs are kind 4
-		Limit: 50,
-	}
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 
+	events := newestFirst(queryRelays(ctx, getRelayList(), dmFilters(publicKey)...), dmLimit)
+
 	var dms []tui.FeedPost
-	for _, url := range relays {
-		relay, err := nostr.RelayConnect(ctx, url)
-		if err != nil {
-			continue
-		}
-
-		evCh, err := relay.QueryEvents(ctx, filter)
-		if err != nil {
-			relay.Close()
-			continue
-		}
-
-		for ev := range evCh {
-			// Check if this DM is for us or from us
-			isForUs := false
-			isFromUs := ev.PubKey == publicKey
-
-			for _, tag := range ev.Tags {
-				if len(tag) > 1 && tag[0] == "p" && tag[1] == publicKey {
-					isForUs = true
-					break
-				}
-			}
-
-			if !isForUs && !isFromUs {
-				continue // Skip messages not involving us
-			}
-
-			// Decrypt the DM content
-			ss, _ := nip04.ComputeSharedSecret(ev.PubKey, privateKey)
-			decrypted, err := nip04.Decrypt(ev.Content, ss)
-			if err != nil {
-				continue // Skip if we can't decrypt
-			}
-
-			direction := "from"
-			if isFromUs {
-				if recipient := ev.Tags.GetFirst([]string{"p"}); recipient != nil && len(*recipient) > 1 {
-					direction = fmt.Sprintf("to %s", (*recipient)[1][:8]+"...")
-				}
-			} else {
-				direction = "from"
-			}
-
-			dms = append(dms, tui.FeedPost{
-				Author:    ev.PubKey,
-				Content:   fmt.Sprintf("[DM %s]: %s", direction, decrypted),
-				CreatedAt: time.Unix(int64(ev.CreatedAt), 0).Format("Jan 2 15:04"),
-			})
-
-			if len(dms) >= 50 {
-				break
-			}
-		}
-		relay.Close()
-		if len(dms) >= 50 {
-			break
+	for _, ev := range events {
+		if post, ok := decryptDM(ev, privateKey, publicKey); ok {
+			dms = append(dms, post)
 		}
 	}
-
 	return dms, nil
 }
 
@@ -752,42 +856,13 @@ func getReactions(eventID string) ([]tui.FeedPost, error) {
 	defer cancel()
 
 	var reactions []tui.FeedPost
-	for _, url := range relays {
-		relay, err := nostr.RelayConnect(ctx, url)
-		if err != nil {
-			continue
+	for _, ev := range newestFirst(queryRelays(ctx, relays, filter), 20) {
+		content := ev.Content // reply
+		if ev.Kind == 7 {
+			content = fmt.Sprintf("[Reacted: %s]", ev.Content)
 		}
-
-		evCh, err := relay.QueryEvents(ctx, filter)
-		if err != nil {
-			relay.Close()
-			continue
-		}
-
-		for ev := range evCh {
-			var content string
-			if ev.Kind == 7 {
-				// Reaction
-				content = fmt.Sprintf("[Reacted: %s]", ev.Content)
-			} else {
-				// Reply
-				content = ev.Content
-			}
-
-			reactions = append(reactions, tui.FeedPost{
-				Author:    ev.PubKey,
-				Content:   content,
-				CreatedAt: time.Unix(int64(ev.CreatedAt), 0).Format("Jan 2 15:04"),
-			})
-
-			if len(reactions) >= 20 {
-				break
-			}
-		}
-		relay.Close()
-		if len(reactions) >= 20 {
-			break
-		}
+		reactions = append(reactions, eventToFeedPost(ev))
+		reactions[len(reactions)-1].Content = content
 	}
 
 	return reactions, nil
@@ -1054,7 +1129,7 @@ func findHandlers(kind int) ([]struct {
 					if err == nil {
 						handler.SupportedKinds = append(handler.SupportedKinds, kind)
 					}
-				} else if tag[0] == "p" && len(tag) > 2 {
+				} else if len(tag) > 2 && tag[0] == "p" {
 					handler.Platforms[tag[1]] = tag[2]
 				}
 			}
@@ -1380,22 +1455,16 @@ func main() {
 				if err != nil {
 					return "", "", err
 				}
-				var sk string
-				if strings.HasPrefix(privKey, "nsec") {
-					_, decoded, err := nip19.Decode(privKey)
-					if err != nil {
-						return "", "", err
-					}
-					sk = decoded.(string)
-				} else {
-					sk = privKey
+				sk, err := normalizePrivKey(privKey)
+				if err != nil {
+					return "", "", err
 				}
 				pk, err := nostr.GetPublicKey(sk)
 				if err != nil {
 					return "", "", err
 				}
 				// Cache for posting
-				localPrivateKey = sk
+				useLocalKey(sk)
 				return sk, pk, nil
 			},
 			OnResetKey: func() error {
@@ -1421,7 +1490,7 @@ func main() {
 				}
 
 				// Cache for posting
-				localPrivateKey = sk
+				useLocalKey(sk)
 				return pk, nil
 			},
 			OnPost:        publishPostTUI,
@@ -1453,6 +1522,10 @@ func main() {
 				//
 				// See nip46.PairingRelays for the full rationale.
 				userRelays := getRelayList()
+				// Drop any previous session (and local key) first so a
+				// retried scan doesn't leak relay connections.
+				endRemoteSession()
+				localPrivateKey = ""
 				uri, session, err := nip46.GenerateConnectURI(nip46.PairingRelays(userRelays), "Hoot")
 				if err != nil {
 					return "", err
@@ -1534,20 +1607,27 @@ func main() {
 					return "", "", err
 				}
 				// Cache for posting
-				localPrivateKey = privKey
+				useLocalKey(privKey)
 				return privKey, pubKey, nil
 			},
-			OnAddProfile: func(name, nsec, password string) (string, error) {
+			OnAddProfile: func(name, nsec, password string) (string, string, error) {
 				profile, err := AddProfile(name, nsec, password)
 				if err != nil {
-					return "", err
+					return "", "", err
+				}
+				sk, err := normalizePrivKey(nsec)
+				if err != nil {
+					return "", "", err
 				}
 				// Cache the private key for posting
-				_, decoded, _ := nip19.Decode(nsec)
-				localPrivateKey = decoded.(string)
-				return profile.PublicKey, nil
+				useLocalKey(sk)
+				return sk, profile.PublicKey, nil
 			},
 			OnDeleteProfile: DeleteProfile,
+			OnLogout: func() {
+				endRemoteSession()
+				localPrivateKey = ""
+			},
 		}
 		if err := tui.Run(cfg); err != nil {
 			log.Fatalf("TUI error: %v", err)
@@ -1622,10 +1702,18 @@ func main() {
 		return
 	}
 
-	// Check if key exists
+	// Check if key exists. Profiles created in the TUI count too —
+	// previously the CLI only knew about the legacy nostr_key.enc, so
+	// anyone who set up hoot through the TUI was told "No private key
+	// found" by every CLI command.
 	keyPath := filepath.Join(configDir, keyFileName)
 	_, err = os.Stat(keyPath)
 	keyExists := !os.IsNotExist(err)
+	cliProfileID := ""
+	if !keyExists {
+		cliProfileID = defaultProfileID()
+		keyExists = cliProfileID != ""
+	}
 
 	// Interactive Login if no key found and no store flag
 	// Use flag.NFlag() == 0 to assume interactive mode if no flags provided
@@ -1673,7 +1761,11 @@ func main() {
 	var privateKey string
 	if err := withLoading("Loading key", func() error {
 		var err error
-		privateKey, err = loadKey([]byte(password))
+		if cliProfileID != "" {
+			privateKey, _, err = UnlockProfile(cliProfileID, password)
+		} else {
+			privateKey, err = loadKey([]byte(password))
+		}
 		return err
 	}); err != nil {
 		log.Fatalf("Failed to load private key: %v", err)
@@ -1681,15 +1773,9 @@ func main() {
 
 	// For actions that need the private key decoded and public key derived,
 	// decode it appropriately.
-	var sk string
-	if strings.HasPrefix(privateKey, "nsec") {
-		_, decoded, err := nip19.Decode(privateKey)
-		if err != nil {
-			log.Fatalf("Invalid nsec key: %v", err)
-		}
-		sk = decoded.(string)
-	} else {
-		sk = privateKey
+	sk, err := normalizePrivKey(privateKey)
+	if err != nil {
+		log.Fatalf("Invalid stored key: %v", err)
 	}
 	pk, err := nostr.GetPublicKey(sk)
 	if err != nil {
@@ -1824,7 +1910,7 @@ func main() {
 			}
 			fmt.Println("Your recent direct messages:")
 			for _, dm := range dms {
-				fmt.Printf("%s (%s): %s\n\n", dm.Author[:16]+"...", dm.CreatedAt, dm.Content)
+				fmt.Printf("%s (%s): %s\n\n", shortKey(dm.Author), dm.CreatedAt, dm.Content)
 			}
 			return nil
 		})
@@ -1843,7 +1929,7 @@ func main() {
 			}
 			fmt.Printf("Replies and reactions to event %s:\n", *repliesPtr)
 			for _, reply := range replies {
-				fmt.Printf("%s (%s): %s\n\n", reply.Author[:16]+"...", reply.CreatedAt, reply.Content)
+				fmt.Printf("%s (%s): %s\n\n", shortKey(reply.Author), reply.CreatedAt, reply.Content)
 			}
 			return nil
 		})
