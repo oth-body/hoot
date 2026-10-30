@@ -23,16 +23,16 @@ func TestQRGeneratesAfterInitMessage(t *testing.T) {
 	// SetCallbacks signature: hasKey, onLoadKey, onResetKey, onLogin,
 	// onPost, onLoadFeed, onInitQR, onCheckQR, onLoadRelays, onSaveRelays
 	m.SetCallbacks(
-		func() bool { return false },                                       // hasKey
-		func(string) (string, string, error) { return "", "", nil },          // onLoadKey
-		func() error { return nil },                                          // onResetKey
-		func(string, string, bool) (string, error) { return "", nil },        // onLogin
-		func(string) error { return nil },                                    // onPost
-		func() ([]FeedPost, error) { return nil, nil },                       // onLoadFeed
-		func() (string, error) { return fakeURI, nil },                       // onInitQR
+		func() bool { return false },                                           // hasKey
+		func(string) (string, string, error) { return "", "", nil },            // onLoadKey
+		func() error { return nil },                                            // onResetKey
+		func(string, string, bool) (string, error) { return "", nil },          // onLogin
+		func(string) error { return nil },                                      // onPost
+		func() ([]FeedPost, error) { return nil, nil },                         // onLoadFeed
+		func() (string, error) { return fakeURI, nil },                         // onInitQR
 		func() (string, *nip46.ProfileMetadata, error) { return "", nil, nil }, // onCheckQR
-		func() ([]string, error) { return nil, nil },                         // onLoadRelays
-		func([]string) error { return nil },                                  // onSaveRelays
+		func() ([]string, error) { return nil, nil },                           // onLoadRelays
+		func([]string) error { return nil },                                    // onSaveRelays
 	)
 
 	// Switch to the QR screen, matching handleLoginEnter logic.

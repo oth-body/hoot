@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"os"
 	"path/filepath"
 	"time"
 
@@ -55,8 +56,29 @@ type RelayStats struct {
 	SuccessfulRequests int64
 }
 
+// expiryUnix returns the expiry time as Unix seconds, or nil (no expiry)
+// for ttl <= 0. The schema stores timestamps as INTEGER and every query
+// compares expires_at against time.Now().Unix(); previously a *time.Time was
+// bound here, which SQLite drivers store as TEXT — and TEXT always compares
+// greater than INTEGER, so cached rows never expired and CleanupExpired
+// never removed anything.
+func expiryUnix(from time.Time, ttl time.Duration) *int64 {
+	if ttl <= 0 {
+		return nil
+	}
+	exp := from.Add(ttl).Unix()
+	return &exp
+}
+
 // New creates a new Cache instance
 func New(dataDir string) (*Cache, error) {
+	// On a fresh install the config dir doesn't exist yet (main opens the
+	// cache before anything else writes there), and SQLite can't create a
+	// database file in a missing directory — so the first run silently
+	// had no cache.
+	if err := os.MkdirAll(dataDir, 0700); err != nil {
+		return nil, fmt.Errorf("failed to create cache directory: %w", err)
+	}
 	dbPath := filepath.Join(dataDir, "hoot_cache.db")
 
 	db, err := sql.Open("sqlite", dbPath)
@@ -79,6 +101,12 @@ func New(dataDir string) (*Cache, error) {
 
 	if err := cache.createTables(); err != nil {
 		return nil, fmt.Errorf("failed to create cache tables: %w", err)
+	}
+
+	// Rows written by older versions stored expires_at as TEXT, which
+	// never compares as expired. It's only a cache: drop them.
+	for _, tbl := range []string{"events", "profiles"} {
+		_, _ = db.Exec("DELETE FROM " + tbl + " WHERE typeof(expires_at) = 'text'")
 	}
 
 	return cache, nil
@@ -148,11 +176,7 @@ func (c *Cache) StoreEvent(event *nostr.Event, ttl time.Duration) error {
 	}
 
 	cachedAt := time.Now()
-	var expiresAt *time.Time
-	if ttl > 0 {
-		exp := cachedAt.Add(ttl)
-		expiresAt = &exp
-	}
+	expiresAt := expiryUnix(cachedAt, ttl)
 
 	_, err = c.db.Exec(`
 		INSERT OR REPLACE INTO events 
@@ -250,11 +274,7 @@ func (c *Cache) GetEventsByPubKey(pubkey string, kind int, limit int) ([]*nostr.
 // StoreProfile stores profile metadata in the cache
 func (c *Cache) StoreProfile(pubkey string, name, about, picture, nip05 string, updatedAt int64, ttl time.Duration) error {
 	cachedAt := time.Now()
-	var expiresAt *time.Time
-	if ttl > 0 {
-		exp := cachedAt.Add(ttl)
-		expiresAt = &exp
-	}
+	expiresAt := expiryUnix(cachedAt, ttl)
 
 	_, err := c.db.Exec(`
 		INSERT OR REPLACE INTO profiles
@@ -275,9 +295,10 @@ func (c *Cache) GetProfile(pubkey string) (*Profile, error) {
 		pubkey, time.Now().Unix())
 
 	var p Profile
+	var cachedAt int64
 	var expiresAt sql.NullInt64
 	err := row.Scan(&p.PubKey, &p.Name, &p.About, &p.Picture, &p.NIP05,
-		&p.UpdatedAt, &p.CachedAt, &expiresAt)
+		&p.UpdatedAt, &cachedAt, &expiresAt)
 
 	if err == sql.ErrNoRows {
 		return nil, nil
@@ -286,6 +307,7 @@ func (c *Cache) GetProfile(pubkey string) (*Profile, error) {
 		return nil, err
 	}
 
+	p.CachedAt = time.Unix(cachedAt, 0)
 	if expiresAt.Valid {
 		expTime := time.Unix(expiresAt.Int64, 0)
 		p.ExpiresAt = &expTime
@@ -321,8 +343,9 @@ func (c *Cache) GetRelayStats(url string) (*RelayStats, error) {
 
 	var rs RelayStats
 	var isActive int
+	var lastCheck int64
 	err := row.Scan(&rs.URL, &rs.AvgResponseTime, &rs.SuccessRate,
-		&rs.LastCheck, &isActive, &rs.TotalRequests, &rs.SuccessfulRequests)
+		&lastCheck, &isActive, &rs.TotalRequests, &rs.SuccessfulRequests)
 
 	if err == sql.ErrNoRows {
 		return nil, nil
@@ -332,6 +355,7 @@ func (c *Cache) GetRelayStats(url string) (*RelayStats, error) {
 	}
 
 	rs.IsActive = isActive == 1
+	rs.LastCheck = time.Unix(lastCheck, 0)
 	return &rs, nil
 }
 
@@ -351,12 +375,14 @@ func (c *Cache) GetActiveRelays() ([]*RelayStats, error) {
 	for rows.Next() {
 		var rs RelayStats
 		var isActive int
+		var lastCheck int64
 		err := rows.Scan(&rs.URL, &rs.AvgResponseTime, &rs.SuccessRate,
-			&rs.LastCheck, &isActive, &rs.TotalRequests, &rs.SuccessfulRequests)
+			&lastCheck, &isActive, &rs.TotalRequests, &rs.SuccessfulRequests)
 		if err != nil {
 			return nil, err
 		}
 		rs.IsActive = isActive == 1
+		rs.LastCheck = time.Unix(lastCheck, 0)
 		relays = append(relays, &rs)
 	}
 

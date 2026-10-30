@@ -598,7 +598,7 @@ func warnUnreachableRelays(configured []string, connected []*nostr.Relay, failur
 // app (Amber, etc.). When Name is empty, the TUI falls back to
 // displaying the npub so the user is never shown an empty header.
 type ProfileMetadata struct {
-	PubKey  string `json:"-"`        // filled from session, not from kind-0 content
+	PubKey  string `json:"-"` // filled from session, not from kind-0 content
 	Name    string `json:"name,omitempty"`
 	About   string `json:"about,omitempty"`
 	Picture string `json:"picture,omitempty"`
