@@ -170,6 +170,12 @@ type Model struct {
 
 	onSendDM func(recipientHex, text string) error
 
+	onSavedAmber    func() (string, bool)
+	onResumeAmber   func() (string, *nip46.ProfileMetadata, error)
+	onForgetAmber   func() error
+	savedAmberLabel string // "" if no saved Amber session
+	resuming        bool   // reconnecting to Amber
+
 	dmTo           string // composer is writing a DM to this hex pubkey
 	dmToLabel      string
 	dmAskRecipient bool // composer is asking who to DM
@@ -477,32 +483,21 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// esc. The session was torn down; don't log them in.
 			return m, nil
 		}
-		m.privateKey = "" // remote signer: no local key
-		m.currentProfileID = ""
-		m.publicKey = msg.pubkey
-		m.loggedIn = true
-		m.screen = ScreenHome
-		// Surface the kind-0 profile on the home screen. The
-		// signer-published name wins over the raw pubkey prefix
-		// because users recognise themselves by name, not by
-		// 16 hex chars. If the kind-0 fetch failed (msg.profile
-		// is nil — many users haven't set a profile), fall back
-		// to a friendly "Logged in" message and let viewHome
-		// render the npub.
-		m.currentProfileName = ""
-		m.currentProfileAbout = ""
-		m.currentProfileNIP05 = ""
-		if msg.profile != nil && msg.profile.Name != "" {
-			m.currentProfileName = msg.profile.Name
-			m.message = fmt.Sprintf("Logged in as %s", msg.profile.Name)
-		} else {
-			m.message = "Logged in via Amber!"
+		m.loginRemote(msg.pubkey, msg.profile)
+		m.refreshSavedAmber()
+		return m, nil
+
+	case amberResumedMsg:
+		m.resuming = false
+		if m.screen != ScreenLogin {
+			return m, nil
 		}
-		if msg.profile != nil {
-			m.currentProfileAbout = msg.profile.About
-			m.currentProfileNIP05 = msg.profile.NIP05
+		if msg.err != nil {
+			m.message = fmt.Sprintf("Couldn't reconnect: %v", msg.err)
+			m.messageStyle = errorStyle
+			return m, nil
 		}
-		m.messageStyle = successStyle
+		m.loginRemote(msg.pubkey, msg.profile)
 		return m, nil
 
 	case qrGeneratedMsg:

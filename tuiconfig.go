@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"hoot/nip46"
 	"hoot/tui"
+	"log"
 	"os"
 	"path/filepath"
 	"strings"
@@ -157,6 +158,15 @@ func tuiConfig() tui.Config {
 					24*time.Hour,
 				)
 			}
+			// Remember the pairing so next time "Continue as …" works
+			// without a QR scan (best effort).
+			name := ""
+			if profile != nil {
+				name = profile.Name
+			}
+			if err := saveAmberSession(nip46Session, name); err != nil {
+				log.Printf("Warning: couldn't save Amber session: %v", err)
+			}
 			return userPubKey, profile, nil
 		},
 		// Profile callbacks
@@ -208,9 +218,12 @@ func tuiConfig() tui.Config {
 			}
 			return res.String(), nil
 		},
-		OnSendDM: sendDM,
-		OnReply:  publishReply,
-		OnReact:  publishReaction,
+		OnSavedAmber:  savedAmberLabel,
+		OnResumeAmber: resumeAmber,
+		OnForgetAmber: forgetAmberSession,
+		OnSendDM:      sendDM,
+		OnReply:       publishReply,
+		OnReact:       publishReaction,
 		OnZap: func(pubkey, eventID string, sats int64) (string, error) {
 			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 			defer cancel()

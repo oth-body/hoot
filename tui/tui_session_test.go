@@ -781,3 +781,65 @@ func TestActionsIgnoreReactions(t *testing.T) {
 		t.Fatalf("screen=%v msg=%q", m.screen, m.message)
 	}
 }
+
+func amberModel(t *testing.T, resume func() (string, *nip46.ProfileMetadata, error)) (Model, *bool) {
+	t.Helper()
+	saved := true
+	m := newModelFromConfig(Config{
+		OnListProfiles: func() ([]ProfileInfo, string, error) {
+			return []ProfileInfo{{ID: "a", Name: "alice"}}, "a", nil
+		},
+		OnSavedAmber:  func() (string, bool) { return "Owl", saved },
+		OnResumeAmber: resume,
+		OnForgetAmber: func() error { saved = false; return nil },
+	})
+	return m, &saved
+}
+
+func TestContinueAsAmber(t *testing.T) {
+	m, _ := amberModel(t, func() (string, *nip46.ProfileMetadata, error) {
+		return strings.Repeat("ab", 32), &nip46.ProfileMetadata{Name: "Owl", NIP05: "owl@x"}, nil
+	})
+	items := m.loginMenuItems()
+	if items[0].action != actResumeAmber || !strings.Contains(m.View(), "Continue as Owl (Amber)") {
+		t.Fatalf("%s", m.View())
+	}
+	// The ★ profile is still the one highlighted at start.
+	if items[m.cursor].action != actProfile {
+		t.Fatalf("cursor on %v", items[m.cursor])
+	}
+	m.cursor = 0
+	m, cmd := press(t, m, tea.KeyMsg{Type: tea.KeyEnter})
+	if !m.resuming || !strings.Contains(m.View(), "Reconnecting to Amber") {
+		t.Fatalf("%s", m.View())
+	}
+	m, _ = run(t, m, cmd)
+	if !m.loggedIn || m.screen != ScreenHome || m.currentProfileName != "Owl" || !strings.Contains(m.View(), "✓ owl@x") {
+		t.Fatalf("loggedIn=%v screen=%v\n%s", m.loggedIn, m.screen, m.View())
+	}
+}
+
+func TestContinueAsAmberFailure(t *testing.T) {
+	m, _ := amberModel(t, func() (string, *nip46.ProfileMetadata, error) {
+		return "", nil, errors.New("Amber didn't answer")
+	})
+	m.cursor = 0
+	m, cmd := press(t, m, tea.KeyMsg{Type: tea.KeyEnter})
+	m, _ = run(t, m, cmd)
+	if m.loggedIn || m.screen != ScreenLogin || !strings.Contains(m.message, "Couldn't reconnect: Amber didn't answer") {
+		t.Fatalf("loggedIn=%v msg=%q", m.loggedIn, m.message)
+	}
+}
+
+func TestForgetAmber(t *testing.T) {
+	m, saved := amberModel(t, func() (string, *nip46.ProfileMetadata, error) { return "", nil, nil })
+	m.cursor = 0
+	m, _ = press(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("x")})
+	if m.step != stepConfirmForget || !strings.Contains(m.View(), "Forget the saved Amber session?") {
+		t.Fatalf("%s", m.View())
+	}
+	m, _ = press(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("y")})
+	if *saved || m.savedAmberLabel != "" || strings.Contains(m.View(), "Continue as") {
+		t.Fatalf("still shown:\n%s", m.View())
+	}
+}

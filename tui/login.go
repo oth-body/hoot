@@ -2,6 +2,7 @@ package tui
 
 import (
 	"fmt"
+	"hoot/nip46"
 	"strings"
 
 	"github.com/charmbracelet/bubbles/textinput"
@@ -22,6 +23,7 @@ const (
 	stepNewPassword                    // adding a profile: choosing a password
 	stepUnlock                         // unlocking the selected profile
 	stepConfirmDelete                  // confirming deletion of the selected profile
+	stepConfirmForget                  // confirming forgetting the saved Amber session
 )
 
 // typingStep reports whether the step has a focused text field.
@@ -36,6 +38,7 @@ const (
 	actAddProfile
 	actScanQR
 	actRelays
+	actResumeAmber
 )
 
 type loginItem struct {
@@ -46,14 +49,17 @@ type loginItem struct {
 
 // loginMenuItems builds the login menu: saved profiles first, then actions.
 func (m Model) loginMenuItems() []loginItem {
-	if len(m.profiles) == 0 {
-		return []loginItem{
-			{label: "Create new profile", action: actAddProfile},
-			{label: "Scan QR with Amber (NIP-46)", action: actScanQR},
-			{label: "🔗 Configure relays", action: actRelays},
-		}
-	}
 	var items []loginItem
+	if m.savedAmberLabel != "" {
+		items = append(items, loginItem{label: "📱 Continue as " + m.savedAmberLabel + " (Amber)", action: actResumeAmber})
+	}
+	if len(m.profiles) == 0 {
+		return append(items,
+			loginItem{label: "Create new profile", action: actAddProfile},
+			loginItem{label: "Scan QR with Amber (NIP-46)", action: actScanQR},
+			loginItem{label: "🔗 Configure relays", action: actRelays},
+		)
+	}
 	for i, p := range m.profiles {
 		name := p.Name
 		if name == "" {
@@ -114,10 +120,10 @@ func (m *Model) reloadProfiles() {
 
 // selectLastUsedProfile puts the menu cursor on the ★ profile.
 func (m *Model) selectLastUsedProfile() {
-	for i, p := range m.profiles {
-		if p.ID == m.lastUsedProfileID {
+	for i, it := range m.loginMenuItems() {
+		if it.action == actProfile && m.profiles[it.profile].ID == m.lastUsedProfileID {
 			m.cursor = i
-			m.selectedProfile = i
+			m.selectedProfile = it.profile
 			return
 		}
 	}
@@ -143,6 +149,17 @@ func (m Model) handleLoginEnter() (tea.Model, tea.Cmd) {
 			return m, m.initQR
 		case actRelays:
 			m.openRelaysFromLogin()
+		case actResumeAmber:
+			if m.resuming {
+				return m, nil
+			}
+			m.resuming = true
+			m.message = ""
+			resume := m.onResumeAmber
+			return m, func() tea.Msg {
+				pk, profile, err := resume()
+				return amberResumedMsg{pubkey: pk, profile: profile, err: err}
+			}
 		}
 
 	case stepUnlock:
@@ -240,10 +257,39 @@ func (m Model) handleLoginKey(key string) (Model, bool) {
 			return m, false
 		}
 		items := m.loginMenuItems()
-		if m.cursor < len(items) && items[m.cursor].action == actProfile && m.onDeleteProfile != nil {
-			m.selectedProfile = items[m.cursor].profile
-			m.step = stepConfirmDelete
+		if m.cursor < len(items) {
+			switch it := items[m.cursor]; {
+			case it.action == actProfile && m.onDeleteProfile != nil:
+				m.selectedProfile = it.profile
+				m.step = stepConfirmDelete
+				m.message = ""
+			case it.action == actResumeAmber && m.onForgetAmber != nil:
+				m.step = stepConfirmForget
+				m.message = ""
+			}
+		}
+		return m, true
+
+	case stepConfirmForget:
+		switch key {
+		case "y":
+			if err := m.onForgetAmber(); err != nil {
+				m.message = fmt.Sprintf("Couldn't forget the session: %v", err)
+				m.messageStyle = errorStyle
+			} else {
+				m.message = "Forgot the saved Amber session"
+				m.messageStyle = successStyle
+			}
+			m.step = stepMenu
+			m.refreshSavedAmber()
+			if n := len(m.loginMenuItems()); m.cursor >= n {
+				m.cursor = n - 1
+			}
+		case "n":
+			m.step = stepMenu
 			m.message = ""
+		default:
+			return m, false
 		}
 		return m, true
 
@@ -328,6 +374,15 @@ func (m Model) viewLogin() string {
 		b.WriteString("\n\n")
 		b.WriteString(m.textInput.View())
 
+	case stepConfirmForget:
+		b.WriteString(errorStyle.Render("Forget the saved Amber session?"))
+		b.WriteString("\n\n")
+		b.WriteString(menuStyle.Render("You'll need to scan a QR code with Amber to sign in again."))
+		b.WriteString("\n")
+		b.WriteString(menuStyle.Render("(To fully revoke access, also remove Hoot in Amber's app list.)"))
+		b.WriteString("\n\n")
+		b.WriteString(menuStyle.Render("Press y to forget, n or Esc to cancel"))
+
 	case stepConfirmDelete:
 		b.WriteString(errorStyle.Render(fmt.Sprintf("Delete profile %q?", profileName())))
 		b.WriteString("\n\n")
@@ -352,10 +407,60 @@ func (m Model) viewLogin() string {
 			}
 			b.WriteString("\n")
 		}
-		if len(m.profiles) > 0 && m.onDeleteProfile != nil {
+		if m.resuming {
 			b.WriteString("\n")
-			b.WriteString(dim.Render("x: delete the selected profile"))
+			b.WriteString(menuStyle.Render(m.spinner.View() + " Reconnecting to Amber... approve on your phone if it asks"))
+			b.WriteString("\n")
+		}
+		if (len(m.profiles) > 0 && m.onDeleteProfile != nil) || m.savedAmberLabel != "" {
+			b.WriteString("\n")
+			b.WriteString(dim.Render("x: delete the selected profile / forget the saved Amber session"))
 		}
 	}
 	return b.String()
+}
+
+// amberResumedMsg delivers the result of reconnecting a saved Amber session.
+type amberResumedMsg struct {
+	pubkey  string
+	profile *nip46.ProfileMetadata
+	err     error
+}
+
+func (m *Model) refreshSavedAmber() {
+	m.savedAmberLabel = ""
+	if m.onSavedAmber != nil && m.onResumeAmber != nil {
+		if label, ok := m.onSavedAmber(); ok {
+			m.savedAmberLabel = label
+		}
+	}
+}
+
+// loginRemote finishes a sign-in through a remote signer (QR pairing or a
+// resumed session): no local key, profile metadata from kind 0.
+func (m *Model) loginRemote(pubkey string, profile *nip46.ProfileMetadata) {
+	m.privateKey = ""
+	m.currentProfileID = ""
+	m.publicKey = pubkey
+	m.loggedIn = true
+	m.screen = ScreenHome
+	m.step = stepMenu
+	m.cursor = 0
+	m.currentProfileName = ""
+	m.currentProfileAbout = ""
+	m.currentProfileNIP05 = ""
+	// The signer-published name wins over the raw key: people recognise
+	// themselves by name. With no kind-0 profile the home screen shows
+	// the npub.
+	if profile != nil && profile.Name != "" {
+		m.currentProfileName = profile.Name
+		m.message = fmt.Sprintf("Logged in as %s", profile.Name)
+	} else {
+		m.message = "Logged in via Amber!"
+	}
+	if profile != nil {
+		m.currentProfileAbout = profile.About
+		m.currentProfileNIP05 = profile.NIP05
+	}
+	m.messageStyle = successStyle
 }
