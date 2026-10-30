@@ -246,7 +246,28 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case tea.KeyMsg:
-		switch msg.String() {
+		key := msg.String()
+
+		// While a text field has focus, every key except the few that
+		// control the form goes to the field. Previously letters were
+		// matched against shortcuts first: typing "k" or "j" moved the
+		// menu cursor mid-form (breaking the add-profile flow), and "r"
+		// in a password field deleted the stored key file.
+		if m.typing() && !formControlKey(m.screen, key) {
+			m.textInput, cmd = m.textInput.Update(msg)
+			return m, tea.Batch(cmd, spinnerCmd)
+		}
+
+		// Home menu shortcuts: the menu shows "[p] Post a message" etc.,
+		// but only q was actually bound.
+		if m.screen == ScreenHome {
+			if idx, ok := homeShortcuts[key]; ok {
+				m.cursor = idx
+				return m.handleHomeEnter()
+			}
+		}
+
+		switch key {
 		case "ctrl+c":
 			// The footer promises "Ctrl+C to quit" on every screen.
 			// Previously ctrl+c shared the esc branch and only went back.
@@ -301,22 +322,6 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "q":
 			if m.screen == ScreenHome {
 				return m, tea.Quit
-			}
-
-		case "r":
-			if m.screen == ScreenLogin {
-				hasKey := m.hasKey != nil && m.hasKey()
-				if hasKey && m.onResetKey != nil {
-					if err := m.onResetKey(); err != nil {
-						m.message = fmt.Sprintf("Reset failed: %v", err)
-						m.messageStyle = errorStyle
-					} else {
-						m.message = "Key file deleted. Please login again."
-						m.messageStyle = successStyle
-						m.textInput.Reset()
-					}
-					return m, nil
-				}
 			}
 
 		case "a":
@@ -506,49 +511,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, m.checkQRConnection
 	}
 
-	// Update text input
-	if (m.screen == ScreenLogin && (m.cursor == 50 || m.cursor == 51 || m.cursor == 100 || m.cursor == 200)) || m.screen == ScreenPost || m.screen == ScreenTip || m.screen == ScreenReplies || (m.screen == ScreenRelays && m.addingRelay) {
-		// Only update input if we are in input mode (not menu selection mode)
-		// For Login: if hasKey (Input mode) OR if !hasKey and cursor=0 (Nsec Entry? No, cursor 0 is menu choice)
-		// Wait, if !hasKey:
-		// Cursor 0 = "Enter nsec" MENU choice
-		// Cursor 1 = "Scan QR" MENU Choice
-		// Only when we select Cursor 0 do we enter INPUT mode.
-
-		// I need to track if I'm in input mode vs menu mode better.
-		// Previous logic used cursor=0 as input mode which overlapped with menu choice 0.
-		// I'll stick to Previous Logic:
-		// !hasKey: cursor 0, 1 are menu.
-		// If user hits enter on 0, what happens?
-		// See handleLoginEnter below.
-
-		// Correct logic from before:
-		// cursor 0 and !hasKey -> Menu Item 0
-		// cursor 100 -> Input Mode for nsec?
-
-		if m.screen == ScreenLogin {
-			hasKey := m.hasKey != nil && m.hasKey()
-			if hasKey {
-				// Password input
-				m.textInput, cmd = m.textInput.Update(msg)
-			} else {
-				// If cursor is 0 (Menu Item 1) -> No input
-				// If cursor is 100 (Password Entry) -> Input
-				// If cursor is 200 (Nsec Entry) -> Input (NEW STATE needed?)
-
-				// Let's refine handleLoginEnter to handle state transitions.
-				// Here, we only update textinput if we are in a state that needs it.
-				// If cursor == 100 (Password) or cursor == 0 AND we are in the "nsec entry" phase?
-				// The previous code reused cursor=0 for menu. This is confusing.
-
-				// Using cursor=50 for Nsec Entry, 100 for Password/Save choice.
-				if m.cursor == 50 || m.cursor == 51 || m.cursor == 100 || m.cursor == 200 {
-					m.textInput, cmd = m.textInput.Update(msg)
-				}
-			}
-		} else {
-			m.textInput, cmd = m.textInput.Update(msg)
-		}
+	// Non-key messages (cursor blink etc.) go to the text field when one
+	// has focus. Keys were routed at the top of the KeyMsg case.
+	if _, isKey := msg.(tea.KeyMsg); !isKey && m.typing() {
+		var inputCmd tea.Cmd
+		m.textInput, inputCmd = m.textInput.Update(msg)
+		cmd = tea.Batch(cmd, inputCmd)
 	}
 
 	// Batch the spinner tick with whatever other cmd the input produced
@@ -1288,6 +1256,11 @@ func (m Model) viewHome() string {
 		b.WriteString(menuStyle.Render(" - " + npub))
 	}
 	b.WriteString("\n")
+	// Full npub, so it can be copied and shared from the terminal.
+	if npub, err := nip19.EncodePublicKey(m.publicKey); err == nil && m.publicKey != "" {
+		b.WriteString(menuStyle.Render(npub))
+		b.WriteString("\n")
+	}
 	// Kind-0 metadata from the Amber/NIP-46 login (#78). Rendered dim,
 	// under the title. NIP-05 gets a ✓ so it reads as an identity at a
 	// glance. Both are single-lined and truncated so a long bio can't
@@ -1663,6 +1636,41 @@ type Config struct {
 	OnLogout func()
 	// OnTip pays a tip (see Model.onTip).
 	OnTip func(target string, sats int64) (string, error)
+}
+
+// homeShortcuts maps the letters shown in the home menu ("[p] Post a
+// message", ...) to their menu index.
+var homeShortcuts = map[string]int{
+	"p": 0, "f": 1, "d": 2, "e": 3, "t": 4, "r": 5, "s": 6, "q": 7,
+}
+
+// typing reports whether a text field currently has focus, i.e. key
+// presses should be treated as text rather than shortcuts.
+func (m Model) typing() bool {
+	switch m.screen {
+	case ScreenLogin:
+		return m.cursor == 50 || m.cursor == 51 || m.cursor == 100 || m.cursor == 200
+	case ScreenPost, ScreenReplies:
+		return true
+	case ScreenTip:
+		return !m.tipping
+	case ScreenRelays:
+		return m.addingRelay
+	}
+	return false
+}
+
+// formControlKey reports keys that keep their command meaning even while a
+// text field has focus.
+func formControlKey(screen Screen, key string) bool {
+	switch key {
+	case "ctrl+c", "esc", "enter":
+		return true
+	case "up", "down":
+		// The replies screen has an input *and* a scrollable result list.
+		return screen == ScreenReplies
+	}
+	return false
 }
 
 // logout clears all login state in the model and asks the host process to

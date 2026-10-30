@@ -264,3 +264,113 @@ func TestTipScreenShowsFailure(t *testing.T) {
 		t.Fatalf("failure not shown:\n%s", m.View())
 	}
 }
+
+// Regression: keys were matched against shortcuts before reaching a focused
+// text field. "k"/"j" moved the cursor mid-form and "r" deleted the stored
+// key file. Every letter must now reach the field untouched.
+func TestLettersGoToFocusedTextField(t *testing.T) {
+	resetCalls := 0
+	added := ""
+	m := newModelFromConfig(Config{
+		HasKey:     func() bool { return true },
+		OnResetKey: func() error { resetCalls++; return nil },
+		OnAddProfile: func(name, nsec, pw string) (string, string, error) {
+			added = pw
+			return "sk", "pk", nil
+		},
+	})
+	m.addingProfile = true
+	m.cursor = 100
+	m.tempName, m.tempNsec = "me", "nsec1whatever"
+	m.textInput.Focus()
+
+	const pw = "jerk-quark-dpfest"
+	for _, r := range pw {
+		m, _ = press(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
+	}
+	if m.cursor != 100 || m.textInput.Value() != pw {
+		t.Fatalf("form state broken by typing: cursor=%d value=%q", m.cursor, m.textInput.Value())
+	}
+	if resetCalls != 0 {
+		t.Fatal("typing 'r' deleted the stored key")
+	}
+	m, _ = press(t, m, tea.KeyMsg{Type: tea.KeyEnter})
+	if !m.loggedIn || added != pw {
+		t.Fatalf("profile not created with typed password: loggedIn=%v pw=%q", m.loggedIn, added)
+	}
+}
+
+func TestComposerAcceptsShortcutLetters(t *testing.T) {
+	var posted string
+	m := newModelFromConfig(Config{OnPost: func(s string) error { posted = s; return nil }})
+	m.loggedIn = true
+	m.screen = ScreenHome
+	m, _ = press(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("p")})
+	if m.screen != ScreenPost {
+		t.Fatalf("p did not open the composer: screen=%v", m.screen)
+	}
+	for _, r := range "quit? press q, r, s, d" {
+		var cmd tea.Cmd
+		m, cmd = press(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
+		if isQuit(cmd) {
+			t.Fatalf("typing %q quit the app", r)
+		}
+	}
+	m, _ = press(t, m, tea.KeyMsg{Type: tea.KeyEnter})
+	if posted != "quit? press q, r, s, d" {
+		t.Fatalf("posted %q", posted)
+	}
+}
+
+// The home menu advertises [p] [f] [d] [e] [t] [r] [s] [q]; only q worked.
+func TestHomeShortcuts(t *testing.T) {
+	cases := map[string]Screen{"p": ScreenPost, "f": ScreenFeed, "d": ScreenDMs, "e": ScreenReplies, "t": ScreenTip, "r": ScreenRelays, "s": ScreenLogin}
+	for key, want := range cases {
+		m := newModelFromConfig(Config{})
+		m.loggedIn, m.screen = true, ScreenHome
+		m, _ = press(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(key)})
+		if m.screen != want {
+			t.Errorf("%q → screen %v, want %v", key, m.screen, want)
+		}
+	}
+	m := newModelFromConfig(Config{})
+	m.loggedIn, m.screen = true, ScreenHome
+	if _, cmd := press(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("q")}); !isQuit(cmd) {
+		t.Error("q did not quit")
+	}
+}
+
+// "r" on the login menu used to silently delete the hoot -s key file.
+func TestLoginRDoesNotDeleteKey(t *testing.T) {
+	resetCalls := 0
+	m := newModelFromConfig(Config{HasKey: func() bool { return true }, OnResetKey: func() error { resetCalls++; return nil }})
+	m, _ = press(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("r")})
+	if resetCalls != 0 {
+		t.Fatal("r on the login screen deleted the stored key")
+	}
+}
+
+func TestRepliesArrowsStillScroll(t *testing.T) {
+	m := newModelFromConfig(Config{})
+	m.loggedIn, m.screen = true, ScreenReplies
+	m.replyPosts = make([]FeedPost, 10)
+	m, _ = press(t, m, tea.KeyMsg{Type: tea.KeyDown})
+	if m.replyScroll != 1 {
+		t.Fatalf("replyScroll = %d", m.replyScroll)
+	}
+	m, _ = press(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("j")})
+	if m.replyScroll != 1 || m.textInput.Value() != "j" {
+		t.Fatalf("j should be typed into the event-ID field: scroll=%d value=%q", m.replyScroll, m.textInput.Value())
+	}
+}
+
+func TestHomeShowsFullNpub(t *testing.T) {
+	sk := nostr.GeneratePrivateKey()
+	pk, _ := nostr.GetPublicKey(sk)
+	npub, _ := nip19.EncodePublicKey(pk)
+	m := newModelFromConfig(Config{})
+	m.loggedIn, m.screen, m.publicKey, m.currentProfileName = true, ScreenHome, pk, "main"
+	if v := m.View(); !strings.Contains(v, npub) {
+		t.Fatalf("home view missing full npub %s:\n%s", npub, v)
+	}
+}
