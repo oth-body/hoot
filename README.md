@@ -18,12 +18,18 @@ Read and post on Nostr, reply, like and zap, and send private DMs, all from the 
 ## Screenshots
 
 <p align="center">
-  <img src="assets/login.png" width="45%" />
-  <img src="assets/home.png" width="45%" />
+  <img src="assets/feed.webp" alt="The global feed: posts in bordered boxes with author names, the selected post's note ID, and key hints for reply, like and zap" width="90%" />
 </p>
 <p align="center">
-  <img src="assets/feed.png" width="91%" />
+  <img src="assets/thread.webp" alt="A thread: the original post at the top, then its replies and reactions" width="45%" />
+  <img src="assets/dms.webp" alt="Direct messages: private NIP-17 messages marked with a lock, and an older NIP-04 message" width="45%" />
 </p>
+<p align="center">
+  <img src="assets/home.webp" alt="The home screen: the profile's npub and the menu" width="45%" />
+  <img src="assets/tip-paid.webp" alt="The tip screen after paying 21 sats to a Lightning address" width="45%" />
+</p>
+
+More screenshots, step by step, in the [documentation](https://hoot-docs.vercel.app).
 
 ## Install
 
@@ -130,7 +136,7 @@ wss://nostr.wine
 
 ```bash
 go test ./...                 # unit + end-to-end tests (in-process relay; no network needed)
-go test -race ./...           # relay-backed tests skip under -race (upstream go-nostr data race)
+go test -race ./...           # same, with the race detector
 go vet ./...
 ```
 
