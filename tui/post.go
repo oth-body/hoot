@@ -72,7 +72,7 @@ func (m Model) viewPost() string {
 	} else if m.replyTo != nil {
 		b.WriteString(titleStyle.Render("↩ Reply"))
 		b.WriteString("\n\n")
-		b.WriteString(menuStyle.Render("Replying to " + authorLabel(*m.replyTo) + ": " + truncateRunes(oneLine(m.replyTo.Content, 200), 70)))
+		b.WriteString(menuStyle.Width(64).Render("Replying to " + authorLabel(*m.replyTo) + ": " + truncateRunes(oneLine(m.replyTo.Content, 200), 120)))
 		b.WriteString("\n\n")
 	} else {
 		b.WriteString(titleStyle.Render("📝 New Post"))

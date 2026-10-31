@@ -10,6 +10,7 @@ import (
 	"hoot/nip46"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 	"github.com/nbd-wtf/go-nostr"
 	"github.com/nbd-wtf/go-nostr/nip19"
 )
@@ -842,4 +843,44 @@ func TestForgetAmber(t *testing.T) {
 	if *saved || m.savedAmberLabel != "" || strings.Contains(m.View(), "Continue as") {
 		t.Fatalf("still shown:\n%s", m.View())
 	}
+}
+
+// A long post must not push any line past an 80-column terminal: a line
+// wider than the terminal stops lipgloss.Place from centering the screen,
+// so the reply composer and the thread view used to render flush-left with
+// the post cut off at the edge.
+func TestLongPostFitsAn80ColumnTerminal(t *testing.T) {
+	long := strings.Repeat("a fairly long sentence about relays and zaps ", 6)
+	m := newModelFromConfig(Config{
+		OnLoadFeed: func() ([]FeedPost, error) {
+			return []FeedPost{{ID: strings.Repeat("1", 64), Kind: 1, Author: strings.Repeat("a", 64), AuthorName: "Alice", Content: long}}, nil
+		},
+		OnLoadReplies: func(string) ([]FeedPost, error) { return nil, nil },
+		OnReply:       func(string, string) error { return nil },
+	})
+	m.loggedIn, m.screen = true, ScreenHome
+	m, _ = press(t, m, tea.WindowSizeMsg{Width: 80, Height: 40})
+	m, cmd := press(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("f")})
+	m, _ = run(t, m, cmd)
+
+	check := func(name string, m Model) {
+		t.Helper()
+		for _, line := range strings.Split(m.View(), "\n") {
+			if w := lipgloss.Width(line); w > 80 {
+				t.Fatalf("%s: line is %d columns wide:\n%s", name, w, line)
+			}
+			if strings.Contains(line, "↩ Reply") || strings.Contains(line, "Replies & Reactions") {
+				if !strings.HasPrefix(line, "   ") {
+					t.Fatalf("%s: title not centered: %q", name, line)
+				}
+			}
+		}
+	}
+
+	r, _ := press(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("r")})
+	check("reply composer", r)
+
+	th, cmd := press(t, m, tea.KeyMsg{Type: tea.KeyEnter})
+	th, _ = run(t, th, cmd)
+	check("thread", th)
 }

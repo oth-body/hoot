@@ -156,7 +156,7 @@ func (m Model) viewReplies() string {
 		dim := lipgloss.NewStyle().Foreground(lipgloss.Color("241"))
 		b.WriteString(lipgloss.NewStyle().Bold(true).Render(authorLabel(*m.threadPost)) + " " + dim.Render(m.threadPost.CreatedAt))
 		b.WriteString("\n")
-		b.WriteString(truncateRunes(m.threadPost.Content, 400))
+		b.WriteString(lipgloss.NewStyle().Width(64).Render(truncateRunes(m.threadPost.Content, 400)))
 		b.WriteString("\n\n")
 	}
 
