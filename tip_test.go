@@ -85,7 +85,7 @@ func (f *tipFixture) advertise(t *testing.T, schemes string) {
 func newTipFixture(t *testing.T) *tipFixture {
 	t.Helper()
 	f := &tipFixture{
-		relay:       startRelay(t), // skips under -race
+		relay:       startRelay(t),
 		walletSK:    nostr.GeneratePrivateKey(),
 		invoiceMsat: func(r int64) int64 { return r },
 		minSendable: 1_000,
