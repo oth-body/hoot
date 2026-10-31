@@ -37,6 +37,7 @@ func (m Model) handleHomeEnter() (tea.Model, tea.Cmd) {
 		m.replyPosts = nil
 		m.replyScroll = 0
 		m.textInput.Placeholder = "Enter event ID to view replies..."
+		m.textInput.EchoMode = textinput.EchoNormal
 		m.textInput.Reset()
 		m.textInput.Focus()
 	case 4: // Tip
