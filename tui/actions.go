@@ -2,6 +2,7 @@ package tui
 
 import (
 	"fmt"
+	"github.com/charmbracelet/bubbles/textinput"
 
 	tea "github.com/charmbracelet/bubbletea"
 )
@@ -63,6 +64,7 @@ func (m Model) handleActionKey(key string) (Model, tea.Cmd, bool) {
 		m.screen = ScreenPost
 		m.message = ""
 		m.textInput.Placeholder = "Write a reply..."
+		m.textInput.EchoMode = textinput.EchoNormal
 		m.textInput.Reset()
 		m.textInput.Focus()
 		return m, nil, true
@@ -88,6 +90,7 @@ func (m Model) handleActionKey(key string) (Model, tea.Cmd, bool) {
 		m.tipStep = 1
 		m.tipTarget = authorLabel(p)
 		m.textInput.Placeholder = "Amount in sats, e.g. 21"
+		m.textInput.EchoMode = textinput.EchoNormal
 		m.textInput.Reset()
 		m.textInput.Focus()
 		return m, nil, true
@@ -142,6 +145,7 @@ func (m Model) handleDMKey(key string) (Model, bool) {
 		m.dmTo, m.dmToLabel = "", ""
 		m.dmAskRecipient = true
 		m.textInput.Placeholder = "npub1... or hex public key"
+		m.textInput.EchoMode = textinput.EchoNormal
 		return m, true
 	}
 	if m.dmScroll >= len(m.dmPosts) || m.dmPosts[m.dmScroll].Peer == "" {
@@ -155,6 +159,7 @@ func (m Model) handleDMKey(key string) (Model, bool) {
 		m.dmToLabel = p.AuthorName
 	}
 	m.textInput.Placeholder = "Write a private message..."
+	m.textInput.EchoMode = textinput.EchoNormal
 	return m, true
 }
 
