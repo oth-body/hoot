@@ -9,6 +9,7 @@ import (
 
 	"hoot/nip46"
 
+	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/nbd-wtf/go-nostr"
@@ -883,4 +884,44 @@ func TestLongPostFitsAn80ColumnTerminal(t *testing.T) {
 	th, cmd := press(t, m, tea.KeyMsg{Type: tea.KeyEnter})
 	th, _ = run(t, th, cmd)
 	check("thread", th)
+}
+
+// After signing in, the shared text field was left in password mode, so a
+// reply (and the DM, tip and replies-by-ID prompts) showed ***** instead of
+// what you typed.
+func TestPromptsAfterPasswordLoginShowTypedText(t *testing.T) {
+	cases := []struct {
+		name string
+		open func(t *testing.T, m Model) Model
+	}{
+		{"reply", func(t *testing.T, m Model) Model {
+			m, _ = press(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("r")})
+			return m
+		}},
+		{"replies by ID", func(t *testing.T, m Model) Model {
+			m.screen, m.cursor = ScreenHome, 3
+			m, _ = press(t, m, tea.KeyMsg{Type: tea.KeyEnter})
+			return m
+		}},
+		{"tip", func(t *testing.T, m Model) Model {
+			m.screen = ScreenHome
+			m, _ = press(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("t")})
+			return m
+		}},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			m := feedModel(t, Config{
+				OnReply:       func(string, string) error { return nil },
+				OnLoadReplies: func(string) ([]FeedPost, error) { return nil, nil },
+				OnTip:         func(string, int64) (string, error) { return "", nil },
+			})
+			m.textInput.EchoMode = textinput.EchoPassword // as left by the login form
+			m = c.open(t, m)
+			m = typeText(t, m, "visible")
+			if !strings.Contains(m.View(), "visible") {
+				t.Fatalf("typed text is hidden:\n%s", m.View())
+			}
+		})
+	}
 }

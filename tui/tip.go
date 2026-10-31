@@ -69,6 +69,7 @@ func (m Model) handleTipEnter() (tea.Model, tea.Cmd) {
 		m.tipStep = 1
 		m.message = ""
 		m.textInput.Placeholder = "Amount in sats, e.g. 21"
+		m.textInput.EchoMode = textinput.EchoNormal
 		m.textInput.Reset()
 		m.textInput.Focus()
 		return m, nil
