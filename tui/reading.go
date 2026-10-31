@@ -154,9 +154,10 @@ func (m Model) viewReplies() string {
 
 	if m.threadPost != nil {
 		dim := lipgloss.NewStyle().Foreground(lipgloss.Color("241"))
-		b.WriteString(lipgloss.NewStyle().Bold(true).Render(authorLabel(*m.threadPost)) + " " + dim.Render(m.threadPost.CreatedAt))
-		b.WriteString("\n")
-		b.WriteString(lipgloss.NewStyle().Width(64).Render(truncateRunes(m.threadPost.Content, 400)))
+		// Same width and text indent as the reply boxes below, so the
+		// thread reads as one column.
+		head := lipgloss.NewStyle().Bold(true).Render(authorLabel(*m.threadPost)) + " " + dim.Render(m.threadPost.CreatedAt)
+		b.WriteString(lipgloss.NewStyle().Width(66).Padding(0, 2).Render(head + "\n" + truncateRunes(m.threadPost.Content, 400)))
 		b.WriteString("\n\n")
 	}
 
