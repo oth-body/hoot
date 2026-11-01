@@ -2,7 +2,6 @@ package tui
 
 import (
 	"fmt"
-	"github.com/charmbracelet/bubbles/textinput"
 
 	tea "github.com/charmbracelet/bubbletea"
 )
@@ -63,10 +62,7 @@ func (m Model) handleActionKey(key string) (Model, tea.Cmd, bool) {
 		m.replyReturn = m.screen
 		m.screen = ScreenPost
 		m.message = ""
-		m.textInput.Placeholder = "Write a reply..."
-		m.textInput.EchoMode = textinput.EchoNormal
-		m.textInput.Reset()
-		m.textInput.Focus()
+		m.openPrompt("Write a reply...")
 		return m, nil, true
 
 	case "+", "l":
@@ -89,10 +85,7 @@ func (m Model) handleActionKey(key string) (Model, tea.Cmd, bool) {
 		m.message = ""
 		m.tipStep = 1
 		m.tipTarget = authorLabel(p)
-		m.textInput.Placeholder = "Amount in sats, e.g. 21"
-		m.textInput.EchoMode = textinput.EchoNormal
-		m.textInput.Reset()
-		m.textInput.Focus()
+		m.openPrompt("Amount in sats, e.g. 21")
 		return m, nil, true
 	}
 	return m, nil, true
@@ -139,13 +132,10 @@ func (m Model) handleDMKey(key string) (Model, bool) {
 	}
 	m.message = ""
 	m.screen = ScreenPost
-	m.textInput.Reset()
-	m.textInput.Focus()
 	if key == "n" {
 		m.dmTo, m.dmToLabel = "", ""
 		m.dmAskRecipient = true
-		m.textInput.Placeholder = "npub1... or hex public key"
-		m.textInput.EchoMode = textinput.EchoNormal
+		m.openPrompt("npub1... or hex public key")
 		return m, true
 	}
 	if m.dmScroll >= len(m.dmPosts) || m.dmPosts[m.dmScroll].Peer == "" {
@@ -158,8 +148,7 @@ func (m Model) handleDMKey(key string) (Model, bool) {
 	if p.Author == p.Peer && p.AuthorName != "" {
 		m.dmToLabel = p.AuthorName
 	}
-	m.textInput.Placeholder = "Write a private message..."
-	m.textInput.EchoMode = textinput.EchoNormal
+	m.openPrompt("Write a private message...")
 	return m, true
 }
 

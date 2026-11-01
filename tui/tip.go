@@ -4,7 +4,6 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 )
 
@@ -47,10 +46,7 @@ type tipResultMsg struct {
 func (m *Model) resetTipForm() {
 	m.tipStep = 0
 	m.tipTarget = ""
-	m.textInput.Placeholder = "name@domain, npub1... or hex pubkey"
-	m.textInput.EchoMode = textinput.EchoNormal
-	m.textInput.Reset()
-	m.textInput.Focus()
+	m.openPrompt("name@domain, npub1... or hex pubkey")
 }
 
 func (m Model) handleTipEnter() (tea.Model, tea.Cmd) {
@@ -68,10 +64,7 @@ func (m Model) handleTipEnter() (tea.Model, tea.Cmd) {
 		m.tipTarget = value
 		m.tipStep = 1
 		m.message = ""
-		m.textInput.Placeholder = "Amount in sats, e.g. 21"
-		m.textInput.EchoMode = textinput.EchoNormal
-		m.textInput.Reset()
-		m.textInput.Focus()
+		m.openPrompt("Amount in sats, e.g. 21")
 		return m, nil
 	}
 
