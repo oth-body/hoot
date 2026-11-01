@@ -89,7 +89,7 @@ func tuiConfig() tui.Config {
 		OnInitQR: func() (string, error) {
 			// Generate NIP-46 URI with ALL configured relays AND
 			// a hard-coded set of relays Amber is known to publish
-			// to (relay.damus.io, nostr.wine). The latter covers
+			// to (relay.damus.io, nos.lol). The latter covers
 			// the common failure mode where the user's relays.txt
 			// is sparse or contains relays Amber doesn't recognise
 			// — Amber then publishes to its own preferred relay

@@ -43,3 +43,7 @@ vendor/
 .env
 .env.local
 *.local
+# A relays.txt in the working directory overrides the config dir, so a
+# copy left in the repo would silently change hoot's relays. Keep the
+# example tracked instead.
+/relays.txt

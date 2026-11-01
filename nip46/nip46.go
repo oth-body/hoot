@@ -135,9 +135,12 @@ func dedupStrings(ss []string) []string {
 // relays changes. Sources: Amber's source code, NIP-46 spec
 // examples, and a year of bug reports in this project's git log
 // against the symptom "scan approved in Amber, no response in hoot".
+//
+// Both must be free to write: hoot's own requests go here too, and a
+// paid relay (nostr.wine was here) rejects writes from non-members.
 var pairingFallbackRelays = []string{
 	"wss://relay.damus.io",
-	"wss://nostr.wine",
+	"wss://nos.lol",
 }
 
 // PairingRelays returns the union of the user's configured relays
@@ -146,10 +149,9 @@ var pairingFallbackRelays = []string{
 // Ordering matters: signers that pick from the nostrconnect://
 // URI tend to use the FIRST listed relay. We put the fallback
 // relays first so that even when the user's relays.txt is full
-// of stale or unreachable relays (a common case — relay.nostr.band
-// has been dead for over a year as of writing), the signer will
-// pick a relay we know is alive, the publish will succeed, and
-// the connect ack will arrive.
+// of stale or unreachable relays, the signer will pick a relay
+// we know is alive, the publish will succeed, and the connect
+// ack will arrive.
 //
 // User relays follow the fallbacks. Empty / nil userRelays is
 // treated as "use fallbacks only".
