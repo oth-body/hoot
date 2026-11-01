@@ -2,14 +2,55 @@ package main
 
 import (
 	"encoding/hex"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
 
+// TestDefaultRelays pins the default relay list, which README.md and the
+// docs repeat, so a change here is deliberate and the docs get updated.
+func TestDefaultRelays(t *testing.T) {
+	want := []string{"wss://relay.damus.io", "wss://nos.lol", "wss://relay.primal.net"}
+	if strings.Join(defaultRelays, " ") != strings.Join(want, " ") {
+		t.Fatalf("defaultRelays = %v, want %v (update README.md and the docs too)", defaultRelays, want)
+	}
+	// Paid-to-write and search-only relays reject or ignore a new user's
+	// posts; they don't belong in the defaults.
+	for _, r := range defaultRelays {
+		for _, bad := range []string{"nostr.wine", "nostr.band"} {
+			if strings.Contains(r, bad) {
+				t.Errorf("default relay %q is paid or search-only", r)
+			}
+		}
+	}
+}
+
+// relays.example.txt documents the defaults; it must parse (comments and
+// all) to exactly the same list.
+func TestRelaysExampleMatchesDefaults(t *testing.T) {
+	data, err := os.ReadFile("relays.example.txt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "relays.txt"), data, 0600); err != nil {
+		t.Fatal(err)
+	}
+	t.Chdir(dir)
+	got, err := loadRelays()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Join(got, " ") != strings.Join(defaultRelays, " ") {
+		t.Fatalf("relays.example.txt parses to %v, defaults are %v", got, defaultRelays)
+	}
+}
+
 // TestDefaultRelaysAreUnique pins the dedup behavior of defaultRelays.
-// A historical bug listed wss://nostr.wine twice, causing every post
-// to be sent to the same relay in parallel. The fix is an init() that
-// dedupes; this test pins it.
+// A historical bug listed one relay twice, causing every post to be sent
+// to the same relay in parallel. The fix is an init() that dedupes; this
+// test pins it.
 func TestDefaultRelaysAreUnique(t *testing.T) {
 	seen := make(map[string]bool, len(defaultRelays))
 	for _, r := range defaultRelays {

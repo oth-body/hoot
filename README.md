@@ -120,13 +120,15 @@ Hoot keeps its files in:
 | `amber_session.json` | Saved Amber pairing (lets this computer ask Amber to sign). **Keep private.** |
 | `hoot_cache.db` | Cache of recent posts and profiles (safe to delete) |
 
-Default relays, used when there's no `relays.txt`:
+Default relays, used when there's no `relays.txt`. All three are free, general-purpose relays that accept posts from anyone:
 
 ```text
 wss://relay.damus.io
-wss://relay.nostr.band
-wss://nostr.wine
+wss://nos.lol
+wss://relay.primal.net
 ```
+
+To use your own, copy [`relays.example.txt`](relays.example.txt) to `relays.txt` in the config directory and edit it, or manage relays from the TUI (**[r] Manage Relays**). Pick free relays unless you've paid for one: paid relays let anyone read but reject posts from non-members.
 
 | Environment variable | Description |
 | -------------------- | ----------- |

@@ -1,0 +1,13 @@
+// Example relay list for hoot. One relay URL per line; lines starting
+// with // are comments.
+//
+// To use it, copy it to relays.txt in your config directory
+// (~/.config/hoot/ on Linux, ~/Library/Application Support/hoot/ on
+// macOS, %APPDATA%\hoot\ on Windows) and edit it. Without a relays.txt,
+// hoot uses the same three relays listed here.
+//
+// Pick free, general-purpose relays. Paid relays (free to read, paid to
+// write) reject your posts unless you're a member.
+wss://relay.damus.io
+wss://nos.lol
+wss://relay.primal.net

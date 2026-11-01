@@ -1,4 +1,0 @@
-wss://purplerelay.com/
-wss://nos.lol/
-wss://relay.damus.io
-wss://relay.nostr.band

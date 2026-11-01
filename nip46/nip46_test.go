@@ -17,8 +17,8 @@ import (
 func TestGenerateConnectURIMultipleRelays(t *testing.T) {
 	relays := []string{
 		"wss://relay.damus.io",
-		"wss://relay.nostr.band",
-		"wss://nostr.wine",
+		"wss://nos.lol",
+		"wss://relay.primal.net",
 	}
 	uri, session, err := GenerateConnectURI(relays, "hoot-test")
 	if err != nil {
@@ -86,7 +86,7 @@ func TestGenerateConnectURIDedupsRelays(t *testing.T) {
 	relays := []string{
 		"wss://relay.damus.io",
 		"wss://relay.damus.io", // dup
-		"wss://nostr.wine",
+		"wss://nos.lol",
 	}
 	uri, _, err := GenerateConnectURI(relays, "hoot-test")
 	if err != nil {
@@ -696,5 +696,18 @@ func TestUserFacingErrorsAreActionable(t *testing.T) {
 				t.Errorf("%s error is not actionable (no URL/env-var/noun to act on): %s", tc.name, msg)
 			}
 		})
+	}
+}
+
+// Pairing fallbacks carry hoot's own NIP-46 requests, so they must be
+// free to write. nostr.wine (paid to write) used to be one of them.
+func TestPairingFallbackRelaysAreFreeToWrite(t *testing.T) {
+	for _, r := range pairingFallbackRelays {
+		if strings.Contains(r, "nostr.wine") || strings.Contains(r, "nostr.band") {
+			t.Errorf("pairing fallback %q is paid or search-only", r)
+		}
+	}
+	if len(pairingFallbackRelays) < 2 {
+		t.Errorf("want at least 2 pairing fallbacks, got %v", pairingFallbackRelays)
 	}
 }

@@ -13,15 +13,22 @@ const (
 	profilesFileName = "profiles.json"
 )
 
-// defaultRelays is the set of relays hoot publishes to when the user
-// has no relays.txt configured. The list is de-duplicated at module
-// load (see init()) — historically this slice contained wss://nostr.wine
-// twice, which caused every post to be sent to the same relay in
-// parallel (and double-counted in `success`).
+// defaultRelays is the set of relays hoot uses when the user has no
+// relays.txt. They must be free, general-purpose relays that accept posts,
+// DMs and reactions from any key without payment or NIP-42 auth:
+// a new user's first post has to land somewhere other apps read. Three
+// independent operators, so one outage doesn't break posting.
+//
+// Not here on purpose: paid relays (e.g. nostr.wine: free to read, paid
+// to write, so every write from a non-member is rejected) and
+// search/indexer relays (e.g. relay.nostr.band). TestDefaultRelays pins
+// this list; keep README.md and the docs' "Relays" section in sync.
+//
+// The list is de-duplicated at load (see init()).
 var defaultRelays = []string{
 	"wss://relay.damus.io",
-	"wss://relay.nostr.band",
-	"wss://nostr.wine",
+	"wss://nos.lol",
+	"wss://relay.primal.net",
 }
 
 func init() {

@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+- **New default relays: `relay.damus.io`, `nos.lol` and `relay.primal.net`.** The old defaults included `nostr.wine`, which is free to read but paid to write, so it rejected every post, reply, like and DM from non-members, and `relay.nostr.band`, a search/indexer relay. In practice new users were publishing to one relay. Only affects people without a `relays.txt`.
+- Amber pairing: the fallback relays are now `relay.damus.io` and `nos.lol` (was `nostr.wine`, which can reject the pairing messages).
+- The repository's `relays.txt` is now `relays.example.txt`. A `relays.txt` in the working directory overrides your config, so running hoot from a clone silently used the repo's list. If you relied on that, copy it to your config directory.
+- Fixed: after signing in with a password, replies (and the replies-by-ID prompt) showed `*****` instead of what you typed.
+- Fixed: on an 80-column terminal, replying to a long post or opening its thread pushed the screen flush-left and cut the post off.
+
 ## [0.4.0] - 2026-10-30
 
 Hoot becomes a day-to-day Nostr client. Highlights: a feed with names, threads and reply/like/zap; private DMs (NIP-17), including with Amber; remembered Amber sessions; NIP-57 zaps; and an in-house relay client that fixes a crash-capable race and queries relays in parallel. **Requires Go 1.26 to build.**
