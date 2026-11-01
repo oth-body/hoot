@@ -85,13 +85,11 @@ func (m Model) loginMenuItems() []loginItem {
 // startInput moves to a text-entry step with a fresh, focused field.
 func (m *Model) startInput(step loginStep, placeholder string, secret bool) {
 	m.step = step
-	m.textInput.Placeholder = placeholder
-	m.textInput.EchoMode = textinput.EchoNormal
 	if secret {
-		m.textInput.EchoMode = textinput.EchoPassword
+		m.openSecretPrompt(placeholder)
+		return
 	}
-	m.textInput.Reset()
-	m.textInput.Focus()
+	m.openPrompt(placeholder)
 }
 
 // backToLoginMenu abandons any in-progress login step.
@@ -100,6 +98,7 @@ func (m *Model) backToLoginMenu() {
 	m.tempName, m.tempNsec = "", ""
 	m.textInput.Reset()
 	m.textInput.EchoMode = textinput.EchoNormal
+	m.secretPrompt = false
 	m.message = ""
 }
 
@@ -197,7 +196,7 @@ func (m Model) handleLoginEnter() (tea.Model, tea.Cmd) {
 			name = "Default"
 		}
 		m.tempName = name
-		m.startInput(stepNsec, "nsec1...", false)
+		m.startInput(stepNsec, "nsec1...", true)
 
 	case stepNsec:
 		nsec := strings.TrimSpace(m.textInput.Value())
@@ -354,8 +353,8 @@ func (m Model) viewLogin() string {
 		b.WriteString(menuStyle.Render(fmt.Sprintf("Unlock profile: %s", profileName())))
 		b.WriteString("\n\n")
 		b.WriteString(m.textInput.View())
-		b.WriteString("\n\n")
-		b.WriteString(dim.Render("Press Esc to go back"))
+		b.WriteString("\n")
+		b.WriteString(dim.Render(m.revealHint()))
 
 	case stepProfileName:
 		b.WriteString(menuStyle.Render("Enter a name for this profile:"))
@@ -366,6 +365,8 @@ func (m Model) viewLogin() string {
 		b.WriteString(menuStyle.Render("Enter your Nostr private key (nsec):"))
 		b.WriteString("\n\n")
 		b.WriteString(m.textInput.View())
+		b.WriteString("\n")
+		b.WriteString(dim.Render(m.revealHint()))
 
 	case stepNewPassword:
 		b.WriteString(menuStyle.Render("Create a password to protect this profile:"))
@@ -373,6 +374,8 @@ func (m Model) viewLogin() string {
 		b.WriteString(dim.Render("(Encrypts your key on this computer. It can't be recovered.)"))
 		b.WriteString("\n\n")
 		b.WriteString(m.textInput.View())
+		b.WriteString("\n")
+		b.WriteString(dim.Render(m.revealHint()))
 
 	case stepConfirmForget:
 		b.WriteString(errorStyle.Render("Forget the saved Amber session?"))

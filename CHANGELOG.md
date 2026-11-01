@@ -7,9 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.1] - 2026-11-01
+
+New default relays and TUI fixes.
+
 - **New default relays: `relay.damus.io`, `nos.lol` and `relay.primal.net`.** The old defaults included `nostr.wine`, which is free to read but paid to write, so it rejected every post, reply, like and DM from non-members, and `relay.nostr.band`, a search/indexer relay. In practice new users were publishing to one relay. Only affects people without a `relays.txt`.
 - Amber pairing: the fallback relays are now `relay.damus.io` and `nos.lol` (was `nostr.wine`, which can reject the pairing messages).
 - The repository's `relays.txt` is now `relays.example.txt`. A `relays.txt` in the working directory overrides your config, so running hoot from a clone silently used the repo's list. If you relied on that, copy it to your config directory.
+- Your **nsec is masked** while you type or paste it when adding a profile, like the password. Press **Ctrl+R** on either field to show or hide what you typed.
+- Fixed: the unlock screen showed "Press Esc to go back" twice.
+- Every text prompt now opens through one helper that resets the field, and a test enforces it, so a prompt can't inherit the login form's password mode again.
 - Fixed: after signing in with a password, replies (and the replies-by-ID prompt) showed `*****` instead of what you typed.
 - Fixed: on an 80-column terminal, replying to a long post or opening its thread pushed the screen flush-left and cut the post off.
 
@@ -105,6 +112,8 @@ Bug fixes from PRs #61-#64:
 - `log.Fatalf` replaced with `log.Printf` + `os.Exit(1)` so defers (notably `eventCache.Close`) run on publish failure
 - Untrack 26 MB of build artifacts from git history (`.gitignore` covers Go binaries, test caches, coverage, IDE scratch)
 
-[Unreleased]: https://github.com/oth-body/hoot/compare/v0.3.0...HEAD
+[Unreleased]: https://github.com/oth-body/hoot/compare/v0.4.1...HEAD
+[0.4.1]: https://github.com/oth-body/hoot/compare/v0.4.0...v0.4.1
+[0.4.0]: https://github.com/oth-body/hoot/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/oth-body/hoot/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/oth-body/hoot/compare/v0.1.0...v0.2.0
