@@ -2,7 +2,6 @@ package tui
 
 import (
 	"fmt"
-	"github.com/charmbracelet/bubbles/textinput"
 	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -30,9 +29,7 @@ func (m Model) handlePostEnter() (tea.Model, tea.Cmd) {
 		m.dmAskRecipient = false
 		m.dmTo, m.dmToLabel = pk, shortNpub(pk)
 		m.message = ""
-		m.textInput.Placeholder = "Write a private message..."
-		m.textInput.EchoMode = textinput.EchoNormal
-		m.textInput.Reset()
+		m.openPrompt("Write a private message...")
 		return m, nil
 	}
 	if m.dmTo != "" {

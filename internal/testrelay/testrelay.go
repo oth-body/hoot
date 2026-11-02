@@ -30,6 +30,7 @@ type Relay struct {
 
 	srv    *httptest.Server
 	mu     sync.Mutex
+	closed bool // set by Close; connections accepted afterwards are dropped
 	events []*nostr.Event
 	subs   map[*websocket.Conn]map[string]nostr.Filters
 }
@@ -47,6 +48,7 @@ func Start() *Relay {
 // websocket connections open.
 func (r *Relay) Close() {
 	r.mu.Lock()
+	r.closed = true
 	for c := range r.subs {
 		_ = c.CloseNow()
 	}
@@ -122,7 +124,14 @@ func (r *Relay) serve(w http.ResponseWriter, req *http.Request) {
 	c.SetReadLimit(1 << 20)
 	ctx := req.Context()
 
+	// The client sees the handshake complete before this registration. If
+	// Close ran in between, it couldn't drop this connection, which then
+	// stayed open forever (TestServerDropClosesEverything flaked on it).
 	r.mu.Lock()
+	if r.closed {
+		r.mu.Unlock()
+		return
+	}
 	r.subs[c] = map[string]nostr.Filters{}
 	r.mu.Unlock()
 	defer func() {

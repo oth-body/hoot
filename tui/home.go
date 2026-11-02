@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/nbd-wtf/go-nostr/nip19"
 )
@@ -13,10 +12,7 @@ func (m Model) handleHomeEnter() (tea.Model, tea.Cmd) {
 	switch m.cursor {
 	case 0: // Post
 		m.screen = ScreenPost
-		m.textInput.Placeholder = "What's on your mind?"
-		m.textInput.EchoMode = textinput.EchoNormal
-		m.textInput.Reset()
-		m.textInput.Focus()
+		m.openPrompt("What's on your mind?")
 	case 1: // Feed
 		m.screen = ScreenFeed
 		return m, m.reloadFeed()
@@ -36,10 +32,7 @@ func (m Model) handleHomeEnter() (tea.Model, tea.Cmd) {
 		m.replyLoading = false
 		m.replyPosts = nil
 		m.replyScroll = 0
-		m.textInput.Placeholder = "Enter event ID to view replies..."
-		m.textInput.EchoMode = textinput.EchoNormal
-		m.textInput.Reset()
-		m.textInput.Focus()
+		m.openPrompt("Enter event ID to view replies...")
 	case 4: // Tip
 		m.screen = ScreenTip
 		m.message = ""

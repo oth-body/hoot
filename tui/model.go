@@ -194,7 +194,9 @@ type Model struct {
 	// Tip screen state
 	tipStep   int    // 0 = entering recipient, 1 = entering amount
 	tipTarget string // recipient from step 0
-	tipping   bool   // payment in flight
+
+	secretPrompt bool // the open prompt is a password/nsec (Ctrl+R reveals)
+	tipping      bool // payment in flight
 }
 
 // NewModel creates a new TUI model
@@ -285,6 +287,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// matched against shortcuts first: typing "k" or "j" moved the
 		// menu cursor mid-form (breaking the add-profile flow), and "r"
 		// in a password field deleted the stored key file.
+		// Ctrl+R shows/hides a password or nsec while it's being typed.
+		if key == "ctrl+r" && m.typing() && m.toggleReveal() {
+			return m, nil
+		}
 		if m.typing() && !formControlKey(m.screen, key) {
 			m.textInput, cmd = m.textInput.Update(msg)
 			return m, tea.Batch(cmd, spinnerCmd)
@@ -387,10 +393,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "a":
 			if m.screen == ScreenRelays && !m.addingRelay {
 				m.addingRelay = true
-				m.textInput.Placeholder = "wss://relay.example.com"
-				m.textInput.EchoMode = textinput.EchoNormal
-				m.textInput.Reset()
-				m.textInput.Focus()
+				m.openPrompt("wss://relay.example.com")
 				m.message = ""
 				return m, nil
 			}
