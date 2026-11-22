@@ -87,25 +87,26 @@ func tuiConfig() tui.Config {
 			return os.WriteFile(relayPath, []byte(data), 0600)
 		},
 		OnInitQR: func() (string, error) {
-			// Generate NIP-46 URI with ALL configured relays AND
-			// a hard-coded set of relays Amber is known to publish
-			// to (relay.damus.io, nos.lol). The latter covers
-			// the common failure mode where the user's relays.txt
-			// is sparse or contains relays Amber doesn't recognise
-			// — Amber then publishes to its own preferred relay
-			// instead of the URI's, and hoot's subscription (only
-			// on the user's relays) never sees the connect ack.
+			// Advertise only the two known-good fallback relays in
+			// the QR. Every relay in the URI is one Amber will open
+			// a WebSocket to; a flaky relay in the list produces a
+			// "expected 101, got 503" error in Amber even though the
+			// ack arrives through a healthy relay. hoot still dials
+			// and subscribes to ALL configured relays plus the
+			// fallbacks, so the connect ack is never missed.
 			//
-			// See nip46.PairingRelays for the full rationale.
+			// Set HOOT_ADVERTISE_ALL_RELAYS=1 to also advertise the
+			// configured relays (e.g. for a private relay setup).
 			userRelays := getRelayList()
 			// Drop any previous session (and local key) first so a
 			// retried scan doesn't leak relay connections.
 			endRemoteSession()
 			localPrivateKey = ""
-			uri, session, err := nip46.GenerateConnectURI(nip46.PairingRelays(userRelays), "Hoot")
+			uri, session, err := nip46.GenerateConnectURI(nip46.AdvertisedRelays(userRelays), "Hoot")
 			if err != nil {
 				return "", err
 			}
+			session.SetListenRelays(nip46.PairingRelays(userRelays))
 			// Dial and subscribe in the background of this cmd.
 			ctx := context.Background()
 			if err := session.ConnectRelays(ctx); err != nil {

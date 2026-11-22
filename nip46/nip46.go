@@ -25,12 +25,34 @@ type Session struct {
 	ClientPrivateKey string
 	ClientPublicKey  string
 	SignerPublicKey  string
-	RelayURLs        []string
+	RelayURLs        []string // relays advertised in the nostrconnect:// URI
 	UserPublicKey    string
+
+	// listenRelays is the broader set hoot subscribes to. It defaults to
+	// RelayURLs when empty. Signers publish the connect ack to a relay from
+	// the URI, but may also use one of their own — listening on more relays
+	// than we advertise costs nothing and makes ack delivery more robust.
+	listenRelays []string
 
 	relays []*hrelay.Relay
 	merged chan *nostr.Event // merged subscription events from all relays
 	cancel context.CancelFunc
+}
+
+// dialURLs returns the relay set hoot should actually open connections to.
+func (s *Session) dialURLs() []string {
+	if len(s.listenRelays) > 0 {
+		return s.listenRelays
+	}
+	return s.RelayURLs
+}
+
+// SetListenRelays widens the set of relays hoot subscribes to beyond the
+// relays advertised in the QR. Extra subscriptions are harmless and make it
+// more likely we see the connect ack even if Amber publishes it somewhere
+// other than the advertised set.
+func (s *Session) SetListenRelays(relays []string) {
+	s.listenRelays = dedupStrings(relays)
 }
 
 type Request struct {
@@ -162,6 +184,26 @@ func PairingRelays(userRelays []string) []string {
 	return dedupStrings(merged)
 }
 
+// AdvertisedRelays is the relay list put in the nostrconnect:// URI.
+//
+// Every relay here is one Amber will try to open a WebSocket to during
+// pairing. If a relay's edge returns 503 on upgrade, Amber shows a
+// "websocket failure: expected 101, got 503" error even though the ack
+// still arrives through a healthy relay. Keeping this list to the two
+// well-provisioned fallbacks minimises the number of connections the
+// signer attempts, while hoot still subscribes broadly (via SetListenRelays
+// / PairingRelays) so the ack is never missed.
+//
+// HOOT_ADVERTISE_ALL_RELAYS=1 opts back into advertising the user's
+// configured relays as well, for setups that specifically need them
+// (e.g. a private relay). Off by default so the common case avoids the 503.
+func AdvertisedRelays(userRelays []string) []string {
+	if os.Getenv("HOOT_ADVERTISE_ALL_RELAYS") != "" {
+		return PairingRelays(userRelays)
+	}
+	return append([]string(nil), pairingFallbackRelays...)
+}
+
 // proxyEnvVars is the set of Go stdlib proxy env vars that
 // net/http honors when resolving a Transport's proxy function.
 // If any of these are set we have to route the wss:// dial through
@@ -231,10 +273,9 @@ func validateRelayURLs(urls []string) error {
 // active. Errors on individual relays are skipped; only a total
 // failure (zero relays connected) returns an error.
 func (s *Session) ConnectRelays(ctx context.Context) error {
-	// Validate the configured relay URLs up front. A blank or
-	// malformed URL would otherwise surface as a confusing
-	// websocket error mid-dial.
-	if err := validateRelayURLs(s.RelayURLs); err != nil {
+	// Validate the relay URLs up front. A blank or malformed URL
+	// would otherwise surface as a confusing websocket error mid-dial.
+	if err := validateRelayURLs(s.dialURLs()); err != nil {
 		return err
 	}
 
@@ -270,11 +311,11 @@ func (s *Session) ConnectRelays(ctx context.Context) error {
 	s.relays = connected
 	if len(connected) == 0 {
 		return &RelayDialFailure{
-			Tried:   append([]string(nil), s.RelayURLs...),
+			Tried:   append([]string(nil), s.dialURLs()...),
 			Reasons: dialFailures,
 		}
 	}
-	warnUnreachableRelays(s.RelayURLs, connected, dialFailures)
+	warnUnreachableRelays(s.dialURLs(), connected, dialFailures)
 
 	// Subscribe on every connected relay; merge event channels.
 	// Track how many subscriptions are currently alive so that
@@ -320,7 +361,7 @@ func (s *Session) ConnectRelays(ctx context.Context) error {
 		return fmt.Errorf("relays connected but every one rejected our subscription (tried: %s); "+
 			"this usually means the relay you're hitting is misconfigured or rate-limiting — "+
 			"check ~/.config/hoot/relays.txt for stale entries",
-			strings.Join(s.RelayURLs, ", "))
+			strings.Join(s.dialURLs(), ", "))
 	}
 
 	// Merge into s.merged so CheckConnection can poll it. Track
@@ -494,9 +535,10 @@ func (s *Session) dialRelays(ctx context.Context, perRelayTimeout time.Duration)
 		err   error
 		url   string
 	}
-	results := make(chan result, len(s.RelayURLs))
+	urls := s.dialURLs()
+	results := make(chan result, len(urls))
 	var wg sync.WaitGroup
-	for _, u := range s.RelayURLs {
+	for _, u := range urls {
 		wg.Add(1)
 		go func(u string) {
 			defer wg.Done()

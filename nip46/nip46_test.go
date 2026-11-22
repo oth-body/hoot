@@ -711,3 +711,91 @@ func TestPairingFallbackRelaysAreFreeToWrite(t *testing.T) {
 		t.Errorf("want at least 2 pairing fallbacks, got %v", pairingFallbackRelays)
 	}
 }
+
+// TestAdvertisedRelaysMinimal pins the fix for Amber's "expected 101,
+// got 503" WebSocket error: the nostrconnect:// URI must advertise only
+// the two well-provisioned fallbacks, never the user's arbitrary relays.
+// Amber opens a WebSocket to every relay in the URI; one flaky relay is
+// enough to surface the 503 even though the ack arrives elsewhere.
+func TestAdvertisedRelaysMinimal(t *testing.T) {
+	t.Setenv("HOOT_ADVERTISE_ALL_RELAYS", "")
+	userRelays := []string{"wss://nostr.bitcoiner.social", "wss://purplerelay.com"}
+	gots := AdvertisedRelays(userRelays)
+	if len(gots) != len(pairingFallbackRelays) {
+		t.Fatalf("AdvertisedRelays should only advertise the fallbacks, got %v", gots)
+	}
+	for _, want := range pairingFallbackRelays {
+		found := false
+		for _, got := range gots {
+			if got == want {
+				found = true
+			}
+		}
+		if !found {
+			t.Errorf("AdvertisedRelays missing fallback %q: %v", want, gots)
+		}
+	}
+	for _, bad := range userRelays {
+		for _, got := range gots {
+			if got == bad {
+				t.Errorf("AdvertisedRelays must not include user relay %q (causes Amber 503): %v", bad, gots)
+			}
+		}
+	}
+}
+
+// TestAdvertisedRelaysOptIn checks the escape hatch: users running a
+// private relay can opt back into advertising all configured relays.
+func TestAdvertisedRelaysOptIn(t *testing.T) {
+	t.Setenv("HOOT_ADVERTISE_ALL_RELAYS", "1")
+	userRelays := []string{"wss://my-private.example.com"}
+	gots := AdvertisedRelays(userRelays)
+	want := PairingRelays(userRelays)
+	if len(gots) != len(want) {
+		t.Fatalf("opt-in AdvertisedRelays = %v, want %v", gots, want)
+	}
+	for i := range want {
+		if gots[i] != want[i] {
+			t.Errorf("opt-in AdvertisedRelays = %v, want %v", gots, want)
+			break
+		}
+	}
+}
+
+// TestSetListenRelaysPinsAdvertisedVsDialed verifies the core split:
+// the URI advertises a minimal set, but the session dials the broader
+// listen set so the connect ack is still received from any relay.
+func TestSetListenRelaysPinsAdvertisedVsDialed(t *testing.T) {
+	uri, session, err := GenerateConnectURI(
+		[]string{"wss://relay.damus.io", "wss://nos.lol"}, "hoot-test")
+	if err != nil {
+		t.Fatalf("GenerateConnectURI: %v", err)
+	}
+	listen := []string{
+		"wss://relay.damus.io", "wss://nos.lol",
+		"wss://nostr.bitcoiner.social", "wss://purplerelay.com",
+	}
+	session.SetListenRelays(listen)
+
+	got := session.dialURLs()
+	if len(got) != len(listen) {
+		t.Fatalf("dialURLs = %v, want the broad listen set %v", got, listen)
+	}
+	for _, u := range listen {
+		found := false
+		for _, g := range got {
+			if g == u {
+				found = true
+			}
+		}
+		if !found {
+			t.Errorf("dialURLs missing %q: %v", u, got)
+		}
+	}
+	// The URI must still contain only the advertised relays.
+	for _, u := range listen {
+		if strings.Contains(uri, u) && u != "wss://relay.damus.io" && u != "wss://nos.lol" {
+			t.Errorf("URI advertises relay %q that was only meant to be listened on: %s", u, uri)
+		}
+	}
+}
