@@ -3,12 +3,19 @@ package tui
 import (
 	"hoot/nip46"
 	"strings"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/mdp/qrterminal/v3"
 	"github.com/muesli/reflow/ansi"
 	"github.com/muesli/reflow/wordwrap"
 )
+
+// longQRWait is how long we show the generic "Waiting for connection..."
+// hint before switching to an actionable one. The signer may be locked or
+// in the background; after two minutes the user needs a nudge, not the
+// same static line.
+const longQRWait = 2 * time.Minute
 
 type qrSuccessMsg struct {
 	pubkey  string
@@ -154,7 +161,11 @@ func (m Model) viewQRLogin() string {
 		// qrGeneratedMsg handler. Showing it below the QR would
 		// contradict the QR that's on-screen.
 		middle = m.qrRendered
-		suffix = menuStyle.Render("Waiting for connection... scan this with your Amber app.")
+		hint := "Waiting for connection... scan this with your Amber app."
+		if !m.qrWaitStart.IsZero() && time.Since(m.qrWaitStart) >= longQRWait {
+			hint = "Still waiting — is Amber open and unlocked? Approve its prompt, or press Esc and scan again."
+		}
+		suffix = menuStyle.Render(hint)
 	} else if m.qrData != "" {
 		middle = m.spinner.View() + " Generating QR code..."
 		suffix = ""

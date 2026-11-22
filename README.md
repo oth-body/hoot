@@ -133,6 +133,7 @@ To use your own, copy [`relays.example.txt`](relays.example.txt) to `relays.txt`
 | Environment variable | Description |
 | -------------------- | ----------- |
 | `HOOT_PASSWORD` | Password for your stored key, for scripts. Environment variables can leak, so prefer feeding it from a password manager. |
+| `HOOT_ADVERTISE_ALL_RELAYS` | Set to any value to also advertise your `relays.txt` relays in the Amber QR code. Off by default: hoot advertises only `relay.damus.io` and `nos.lol`, because every advertised relay is one Amber must open a WebSocket to and a flaky one shows a "503 Service Unavailable" error. hoot always subscribes to all your relays either way. |
 
 ## Development
 

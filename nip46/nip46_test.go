@@ -777,9 +777,9 @@ func TestSetListenRelaysPinsAdvertisedVsDialed(t *testing.T) {
 	}
 	session.SetListenRelays(listen)
 
-	got := session.dialURLs()
+	got := session.DialURLs()
 	if len(got) != len(listen) {
-		t.Fatalf("dialURLs = %v, want the broad listen set %v", got, listen)
+		t.Fatalf("DialURLs = %v, want the broad listen set %v", got, listen)
 	}
 	for _, u := range listen {
 		found := false
@@ -789,7 +789,7 @@ func TestSetListenRelaysPinsAdvertisedVsDialed(t *testing.T) {
 			}
 		}
 		if !found {
-			t.Errorf("dialURLs missing %q: %v", u, got)
+			t.Errorf("DialURLs missing %q: %v", u, got)
 		}
 	}
 	// The URI must still contain only the advertised relays.
