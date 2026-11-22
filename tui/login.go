@@ -144,6 +144,7 @@ func (m Model) handleLoginEnter() (tea.Model, tea.Cmd) {
 		case actScanQR:
 			m.screen = ScreenQRLogin
 			m.qrReady = false
+			m.qrError = ""
 			m.message = "Generating QR code..."
 			return m, m.initQR
 		case actRelays:

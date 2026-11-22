@@ -128,7 +128,8 @@ type Model struct {
 	qrData              string // Store URI instead of rendered string
 	qrRendered          string // Generated QR code based on current dimensions
 	qrReady             bool
-	qrNeedsRegeneration bool // Flag to regenerate on resize
+	qrNeedsRegeneration bool   // Flag to regenerate on resize
+	qrError             string // Fatal pairing error, rendered on the QR screen itself
 
 	// Relay State
 	relays        []string
@@ -507,6 +508,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.qrData = msg.uri
 		m.qrNeedsRegeneration = true
 		m.qrReady = true
+		m.qrError = ""
 		// Clear the "Generating QR code..." banner left over from
 		// handleLoginEnter — the QR is now visible, so showing that
 		// text below it is contradictory and read by users as "stuck".
@@ -516,14 +518,19 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, m.checkQRConnection
 
 	case qrInitErrorMsg:
-		// OnInitQR failed (proxy env var set, all relays unreachable,
-		// bad relays.txt, etc.). Surface the actionable error from
-		// nip46.go instead of leaving "Generating connection..."
-		// on screen forever. Stay on ScreenQRLogin so the user can
-		// press Esc to back out; the message goes into m.message so
-		// viewQRLogin will pick it up at the bottom of the block.
+		// OnInitQR (or a later NIP-46 check) failed. Show the actionable
+		// error on the QR screen itself: the old code only put it in
+		// m.message, which View() appended after the QR block and footer,
+		// so users read it as a main-menu message and often pressed Esc
+		// before noticing it. Clear the QR so we don't show a stale code
+		// next to "Waiting for connection..." after the session died.
+		text := fmt.Sprintf("Sign-in failed: %v", msg.err)
+		m.qrError = text
+		m.qrData = ""
+		m.qrRendered = ""
+		m.qrNeedsRegeneration = false
 		m.qrReady = false
-		m.message = fmt.Sprintf("Sign-in failed: %v", msg.err)
+		m.message = text
 		m.messageStyle = errorStyle
 		return m, nil
 
@@ -645,7 +652,11 @@ func (m Model) View() string {
 		b.WriteString(m.viewRelays())
 	}
 
-	if m.message != "" {
+	// On the QR screen a fatal pairing error is rendered inside
+	// viewQRLogin, aligned with the rest of the block. Appending the
+	// global message here as well would duplicate it below the footer
+	// and make it look like a main-menu message.
+	if m.message != "" && !(m.screen == ScreenQRLogin && m.qrError != "") {
 		b.WriteString("\n" + m.messageStyle.Render(m.message))
 	}
 
@@ -688,4 +699,5 @@ func (m *Model) logout() {
 	m.qrData = ""
 	m.qrRendered = ""
 	m.qrReady = false
+	m.qrError = ""
 }

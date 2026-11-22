@@ -7,6 +7,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/mdp/qrterminal/v3"
 	"github.com/muesli/reflow/ansi"
+	"github.com/muesli/reflow/wordwrap"
 )
 
 type qrSuccessMsg struct {
@@ -133,7 +134,20 @@ func (m Model) viewQRLogin() string {
 
 	var middle string
 	var suffix string
-	if m.qrRendered != "" {
+	if m.qrError != "" {
+		// A pairing failure is terminal for this QR attempt. Show it
+		// where the user is looking — on the QR screen — instead of
+		// leaving a stale QR and "Waiting for connection..." above a
+		// message appended after the footer. Wrap long proxy/relay
+		// errors so they stay inside the terminal width.
+		wrapWidth := m.width - 4
+		if wrapWidth < 20 {
+			wrapWidth = 60
+		}
+		middle = errorStyle.Render(wordwrap.String(m.qrError, wrapWidth))
+		// The shared footer below already says how to get back.
+		suffix = ""
+	} else if m.qrRendered != "" {
 		// QR is rendered. Don't append the global m.message here —
 		// it could be the leftover "Generating QR code..." string
 		// from handleLoginEnter, which was cleared in the
