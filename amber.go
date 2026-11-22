@@ -43,7 +43,7 @@ func saveAmberSession(s *nip46.Session, name string) error {
 		ClientSecret: s.ClientPrivateKey,
 		SignerPubKey: s.SignerPublicKey,
 		UserPubKey:   s.UserPublicKey,
-		Relays:       s.RelayURLs,
+		Relays:       s.DialURLs(),
 		Name:         name,
 		SavedAt:      time.Now(),
 	}, "", "  ")

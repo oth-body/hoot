@@ -39,12 +39,15 @@ type Session struct {
 	cancel context.CancelFunc
 }
 
-// dialURLs returns the relay set hoot should actually open connections to.
-func (s *Session) dialURLs() []string {
+// DialURLs returns the relay set hoot should actually open connections to.
+// This is the full listen set (configured relays + fallbacks), not the
+// minimal set advertised in the QR. Callers persisting a session must save
+// this so the next launch keeps using the configured relays.
+func (s *Session) DialURLs() []string {
 	if len(s.listenRelays) > 0 {
-		return s.listenRelays
+		return append([]string(nil), s.listenRelays...)
 	}
-	return s.RelayURLs
+	return append([]string(nil), s.RelayURLs...)
 }
 
 // SetListenRelays widens the set of relays hoot subscribes to beyond the
@@ -275,7 +278,7 @@ func validateRelayURLs(urls []string) error {
 func (s *Session) ConnectRelays(ctx context.Context) error {
 	// Validate the relay URLs up front. A blank or malformed URL
 	// would otherwise surface as a confusing websocket error mid-dial.
-	if err := validateRelayURLs(s.dialURLs()); err != nil {
+	if err := validateRelayURLs(s.DialURLs()); err != nil {
 		return err
 	}
 
@@ -311,11 +314,11 @@ func (s *Session) ConnectRelays(ctx context.Context) error {
 	s.relays = connected
 	if len(connected) == 0 {
 		return &RelayDialFailure{
-			Tried:   append([]string(nil), s.dialURLs()...),
+			Tried:   append([]string(nil), s.DialURLs()...),
 			Reasons: dialFailures,
 		}
 	}
-	warnUnreachableRelays(s.dialURLs(), connected, dialFailures)
+	warnUnreachableRelays(s.DialURLs(), connected, dialFailures)
 
 	// Subscribe on every connected relay; merge event channels.
 	// Track how many subscriptions are currently alive so that
@@ -361,7 +364,7 @@ func (s *Session) ConnectRelays(ctx context.Context) error {
 		return fmt.Errorf("relays connected but every one rejected our subscription (tried: %s); "+
 			"this usually means the relay you're hitting is misconfigured or rate-limiting — "+
 			"check ~/.config/hoot/relays.txt for stale entries",
-			strings.Join(s.dialURLs(), ", "))
+			strings.Join(s.DialURLs(), ", "))
 	}
 
 	// Merge into s.merged so CheckConnection can poll it. Track
@@ -535,7 +538,7 @@ func (s *Session) dialRelays(ctx context.Context, perRelayTimeout time.Duration)
 		err   error
 		url   string
 	}
-	urls := s.dialURLs()
+	urls := s.DialURLs()
 	results := make(chan result, len(urls))
 	var wg sync.WaitGroup
 	for _, u := range urls {

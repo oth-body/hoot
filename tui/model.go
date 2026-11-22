@@ -128,8 +128,9 @@ type Model struct {
 	qrData              string // Store URI instead of rendered string
 	qrRendered          string // Generated QR code based on current dimensions
 	qrReady             bool
-	qrNeedsRegeneration bool   // Flag to regenerate on resize
-	qrError             string // Fatal pairing error, rendered on the QR screen itself
+	qrNeedsRegeneration bool      // Flag to regenerate on resize
+	qrError             string    // Fatal pairing error, rendered on the QR screen itself
+	qrWaitStart         time.Time // when this QR was shown, for the long-wait hint
 
 	// Relay State
 	relays        []string
@@ -700,4 +701,5 @@ func (m *Model) logout() {
 	m.qrRendered = ""
 	m.qrReady = false
 	m.qrError = ""
+	m.qrWaitStart = time.Time{}
 }

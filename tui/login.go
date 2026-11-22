@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"hoot/nip46"
 	"strings"
+	"time"
 
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
@@ -145,6 +146,7 @@ func (m Model) handleLoginEnter() (tea.Model, tea.Cmd) {
 			m.screen = ScreenQRLogin
 			m.qrReady = false
 			m.qrError = ""
+			m.qrWaitStart = time.Now()
 			m.message = "Generating QR code..."
 			return m, m.initQR
 		case actRelays:
