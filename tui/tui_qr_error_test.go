@@ -4,6 +4,7 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"time"
 
 	"hoot/nip46"
 
@@ -103,6 +104,35 @@ func TestQRErrorClearedOnRetry(t *testing.T) {
 	}
 	if m.qrRendered == "" {
 		t.Fatal("QR not rendered after retry")
+	}
+}
+
+// TestQRLongWaitHintEscalates pins the UX fix: the generic "Waiting for
+// connection..." line must switch to an actionable hint once the user has
+// been staring at the QR for a while, so a locked/closed Amber doesn't
+// leave them stuck forever.
+func TestQRLongWaitHintEscalates(t *testing.T) {
+	m := newQRModel(func() (string, error) {
+		return "nostrconnect://0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef?relay=wss%3A%2F%2Frelay.damus.io", nil
+	})
+	upd, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	m = upd.(Model)
+	m.screen = ScreenQRLogin
+	upd, _ = m.Update(qrGeneratedMsg{uri: "nostrconnect://0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef?relay=wss%3A%2F%2Frelay.damus.io"})
+	m = upd.(Model)
+	m.regenerateQR()
+
+	if got := m.View(); !strings.Contains(got, "Waiting for connection") {
+		t.Fatalf("fresh QR should show the normal waiting hint:\n%s", got)
+	}
+
+	m.qrWaitStart = time.Now().Add(-longQRWait - time.Second)
+	got := m.View()
+	if strings.Contains(got, "Waiting for connection") {
+		t.Fatalf("long wait still shows the generic hint:\n%s", got)
+	}
+	if !strings.Contains(got, "Still waiting") {
+		t.Fatalf("long wait did not show the actionable hint:\n%s", got)
 	}
 }
 

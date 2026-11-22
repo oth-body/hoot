@@ -819,6 +819,46 @@ func TestE2EAmberSessionSaveResumeForget(t *testing.T) {
 	}
 }
 
+// The saved session must persist the full listen set, not just the minimal
+// set advertised in the QR. Otherwise a resume after the 503 fix would only
+// dial the two fallbacks and silently drop configured relays.
+func TestE2ESavedAmberSessionKeepsConfiguredRelays(t *testing.T) {
+	r := startRelay(t)
+	isolate(t, r.URL)
+	pairWithSigner(t, r.URL, nostr.GeneratePrivateKey())
+
+	const privateRelay = "wss://private.example.com"
+	nip46Session.SetListenRelays(append(nip46Session.DialURLs(), privateRelay))
+	if err := saveAmberSession(nip46Session, "Owl"); err != nil {
+		t.Fatal(err)
+	}
+
+	sv, err := loadAmberSession()
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, u := range sv.Relays {
+		if u == privateRelay {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("saved session dropped configured relay %q: %v", privateRelay, sv.Relays)
+	}
+	for _, u := range nip46Session.RelayURLs {
+		found = false
+		for _, saved := range sv.Relays {
+			if saved == u {
+				found = true
+			}
+		}
+		if !found {
+			t.Errorf("saved session missing advertised relay %q: %v", u, sv.Relays)
+		}
+	}
+}
+
 func TestE2EAmberResumeFailsClearlyWhenSignerOffline(t *testing.T) {
 	r := startRelay(t)
 	isolate(t, r.URL)
