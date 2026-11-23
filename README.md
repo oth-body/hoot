@@ -49,6 +49,7 @@ hoot                                   # open the TUI: add a profile or scan wit
 hoot -m "Hello Nostr! #introduction"   # post from the command line
 hoot -nwc "nostr+walletconnect://..."  # connect a wallet (once)
 hoot -tip 21 -user alice@getalby.com   # send a tip
+hoot -zap 21 -user npub1... -comment "gm" # send a signed NIP-57 zap
 hoot -dm npub1... -m "hi"              # send a private message
 hoot -set about="new bio"              # change one profile field
 ```
@@ -84,7 +85,8 @@ The CLI uses the key stored with `hoot -s -k <nsec>` if there is one, otherwise 
 | `-replies <id>` | Show replies/reactions to a note (`note1…`, `nevent1…` or hex) |
 | `-s -k <nsec>` | Store a private key, encrypted with a password |
 | `-nwc "uri"` | Save your Nostr Wallet Connect connection string |
-| `-tip <sats> -user <who>` | Tip a Lightning address, npub or hex pubkey |
+| `-tip <sats> -user <who>` | Tip a Lightning address, npub or hex pubkey (no Nostr key needed) |
+| `-zap <sats> -user <npub\|hex>` | Send a signed NIP-57 zap (optional `-event <id>` and `-comment "text"`; requires your stored key) |
 | `-register-handler "kinds"` | NIP-89: announce a handler app (with `-url-template`, `-platform`) |
 | `-recommend "pk:d:kind"` | NIP-89: recommend a handler app |
 | `-find-handlers <kind>` | NIP-89: list handler apps for a kind |
@@ -97,9 +99,9 @@ See the [CLI reference](https://hoot-docs.vercel.app/cli-reference/) for details
 
 1. In your wallet (e.g. Alby Hub), create an app connection that can send payments and copy its `nostr+walletconnect://` string.
 2. `hoot -nwc "<that string>"`
-3. Zap a post from the feed (`z`), tip from the TUI (**[t] Tip someone**), or use `hoot -tip <sats> -user <who>`.
+3. Zap a post from the feed (`z`), tip from the TUI (**[t] Tip someone**), or use the CLI: `hoot -tip <sats> -user <who>` (plain tip, no key required) or `hoot -zap <sats> -user <npub|hex> [-event <id>] [-comment "text"]` (signed NIP-57 zap).
 
-Hoot waits up to 60 seconds for the wallet's confirmation. If it times out, the payment may still complete, so check your wallet before retrying. More in the [tipping guide](https://hoot-docs.vercel.app/wallet-connect/).
+In the TUI, hoot asks you to confirm (`y` to pay, `n` or `Esc` to go back) before sending the payment request to your wallet. Hoot then waits up to 60 seconds for the wallet's confirmation. If it times out, the payment may still complete, so check your wallet before retrying. More in the [tipping guide](https://hoot-docs.vercel.app/wallet-connect/).
 
 ## Configuration
 

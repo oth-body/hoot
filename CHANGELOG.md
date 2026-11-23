@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-11-23
+
+Tip/zap confirmation, CLI zaps, QR pairing UX fixes, and security updates. (First tagged GitHub release since `v0.3.0`; includes all `0.4.0` and `0.4.1` changes below.)
+
+- **TUI payment confirmation:** tipping (`[t] Tip someone`) and zapping (`z` on a post) now ask `Pay N sats to …?` / `Zap N sats to …?` and wait for **`y`** before asking your wallet to pay. **`n`** or **Esc** cancels back to the amount field with your input preserved.
+- **CLI zaps (`-zap`):** `hoot -zap <sats> -user <npub|hex> [-event <id>] [-comment "text"]` sends a signed NIP-57 zap from the command line (`-event` accepts `note1…`, `nevent1…`, `nostr:` or 64-char hex). Falls back to a plain tip if the recipient's Lightning address doesn't advertise `allowsNostr`. Requires your stored key (password prompt or `HOOT_PASSWORD`) to sign the kind-9734 zap request.
+- **Amber QR pairing:** fatal NIP-46 pairing errors are now rendered directly on the QR screen (#100); long waits escalate with actionable hints and saved Amber sessions persist their listen relays (#101).
+- **Security & build:** bumped `toolchain` to `go1.26.11` (fixes stdlib `net/http` `GO-2026-6859` / `CVE-2026-97054`) and `golang.org/x/crypto` to `v0.59.0` (clears module advisory `GO-2026-5932`). Fixed `.goreleaser.yml` to package `relays.example.txt` and `CHANGELOG.md`.
+
 ## [0.4.1] - 2026-11-01
 
 New default relays and TUI fixes.

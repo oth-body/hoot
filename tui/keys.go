@@ -12,7 +12,7 @@ func (m Model) typing() bool {
 		// The event-ID box; a thread opened from a list has no input.
 		return m.threadPost == nil
 	case ScreenTip:
-		return !m.tipping
+		return !m.tipping && m.tipStep != 2
 	case ScreenRelays:
 		return m.addingRelay
 	}

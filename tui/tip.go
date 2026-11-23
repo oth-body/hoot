@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"fmt"
 	"strconv"
 	"strings"
 
@@ -21,6 +22,14 @@ func (m Model) viewTip() string {
 	switch {
 	case m.tipping:
 		b.WriteString(menuStyle.Render(m.spinner.View() + " Waiting for your wallet to pay..."))
+	case m.tipStep == 2:
+		verb := "Pay"
+		if m.zapPost != nil {
+			verb = "Zap"
+		}
+		b.WriteString(errorStyle.Render(fmt.Sprintf("%s %d sats to %s?", verb, m.tipAmount, m.tipTarget)))
+		b.WriteString("\n\n")
+		b.WriteString(menuStyle.Render("Press y to pay, n or Esc to go back"))
 	case m.tipStep == 1:
 		b.WriteString(menuStyle.Render("To: " + m.tipTarget))
 		b.WriteString("\n")
@@ -46,11 +55,12 @@ type tipResultMsg struct {
 func (m *Model) resetTipForm() {
 	m.tipStep = 0
 	m.tipTarget = ""
+	m.tipAmount = 0
 	m.openPrompt("name@domain, npub1... or hex pubkey")
 }
 
 func (m Model) handleTipEnter() (tea.Model, tea.Cmd) {
-	if m.tipping {
+	if m.tipping || m.tipStep == 2 {
 		return m, nil
 	}
 	value := strings.TrimSpace(m.textInput.Value())
@@ -74,6 +84,35 @@ func (m Model) handleTipEnter() (tea.Model, tea.Cmd) {
 		m.messageStyle = errorStyle
 		return m, nil
 	}
+	if m.zapPost == nil && m.onTip == nil {
+		m.message = "Tipping is not available"
+		m.messageStyle = errorStyle
+		return m, nil
+	}
+	m.tipAmount = sats
+	m.tipStep = 2
+	m.message = ""
+	m.textInput.Blur()
+	return m, nil
+}
+
+func (m Model) handleTipConfirmKey(key string) (tea.Model, tea.Cmd) {
+	if m.tipping {
+		return m, nil
+	}
+	switch key {
+	case "y":
+		return m.startTipPayment(m.tipAmount)
+	case "n", "esc":
+		m.tipStep = 1
+		m.message = ""
+		m.textInput.Focus()
+		return m, nil
+	}
+	return m, nil
+}
+
+func (m Model) startTipPayment(sats int64) (tea.Model, tea.Cmd) {
 	if m.zapPost != nil && m.onZap != nil {
 		m.tipping = true
 		m.message = ""

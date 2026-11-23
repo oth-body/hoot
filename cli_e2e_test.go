@@ -81,4 +81,26 @@ func TestCLIEndToEndAgainstLocalRelay(t *testing.T) {
 	if out := run("-p"); !strings.Contains(out, `"name":"e2e-owl"`) || !strings.Contains(out, `"about":"new bio"`) || !strings.Contains(out, `"website":"https://hoot.example"`) {
 		t.Fatalf("-p after -set:\n%s", out)
 	}
+
+	runFail := func(want string, args ...string) {
+		t.Helper()
+		cmd := exec.Command(binaryPath, args...)
+		cmd.Dir = workDir
+		cmd.Env = append(os.Environ(),
+			"HOME="+home, "XDG_CONFIG_HOME="+home, "APPDATA="+home,
+			"HOOT_PASSWORD=e2e-pass")
+		out, err := cmd.CombinedOutput()
+		if err == nil {
+			t.Fatalf("hoot %v succeeded unexpectedly:\n%s", args, out)
+		}
+		if !strings.Contains(string(out), want) {
+			t.Fatalf("hoot %v output = %s, want %q", args, out, want)
+		}
+	}
+
+	runFail("-user", "-zap", "21")
+	runFail("npub or hex pubkey", "-zap", "21", "-user", "alice@example.com")
+	runFail("no wallet connected", "-zap", "21", "-user", pk)
+	runFail("Cannot use -tip and -zap together", "-tip", "21", "-zap", "21", "-user", pk)
+	runFail("Use -event and -comment together with -zap", "-event", strings.Repeat("e", 64))
 }
