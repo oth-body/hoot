@@ -320,6 +320,15 @@ func TestTipScreenFlow(t *testing.T) {
 
 	m.textInput.SetValue("21")
 	m, cmd := press(t, m, tea.KeyMsg{Type: tea.KeyEnter})
+	if m.tipping || cmd != nil || m.tipStep != 2 || !strings.Contains(m.View(), "Pay 21 sats to alice@example.com?") {
+		t.Fatalf("confirmation not shown: step=%d tipping=%v\n%s", m.tipStep, m.tipping, m.View())
+	}
+	// Enter on the confirmation step does not pay; explicit y is required.
+	if _, c := press(t, m, tea.KeyMsg{Type: tea.KeyEnter}); c != nil || m.tipping {
+		t.Fatal("Enter on confirmation step started payment")
+	}
+
+	m, cmd = press(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("y")})
 	if !m.tipping || cmd == nil || !strings.Contains(m.View(), "Waiting for your wallet") {
 		t.Fatalf("payment not started: tipping=%v\n%s", m.tipping, m.View())
 	}
@@ -337,6 +346,36 @@ func TestTipScreenFlow(t *testing.T) {
 	}
 }
 
+func TestTipScreenConfirmCancel(t *testing.T) {
+	called := false
+	m := newModelFromConfig(Config{OnTip: func(string, int64) (string, error) {
+		called = true
+		return "", nil
+	}})
+	m.loggedIn, m.screen = true, ScreenTip
+	m.resetTipForm()
+	m = typeText(t, m, "alice@example.com")
+	m, _ = press(t, m, tea.KeyMsg{Type: tea.KeyEnter})
+	m = typeText(t, m, "21")
+	m, _ = press(t, m, tea.KeyMsg{Type: tea.KeyEnter})
+	if m.tipStep != 2 {
+		t.Fatalf("step = %d, want 2", m.tipStep)
+	}
+
+	// Pressing n returns to step 1 with the amount preserved and nothing paid.
+	m, cmd := press(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("n")})
+	if cmd != nil || called || m.tipStep != 1 || m.textInput.Value() != "21" {
+		t.Fatalf("after n: step=%d val=%q called=%v", m.tipStep, m.textInput.Value(), called)
+	}
+
+	// Pressing Esc on confirmation also returns to step 1 rather than Home.
+	m, _ = press(t, m, tea.KeyMsg{Type: tea.KeyEnter})
+	m, cmd = press(t, m, tea.KeyMsg{Type: tea.KeyEsc})
+	if cmd != nil || called || m.screen != ScreenTip || m.tipStep != 1 || m.textInput.Value() != "21" {
+		t.Fatalf("after esc: screen=%v step=%d val=%q called=%v", m.screen, m.tipStep, m.textInput.Value(), called)
+	}
+}
+
 func TestTipScreenShowsFailure(t *testing.T) {
 	m := newModelFromConfig(Config{OnTip: func(string, int64) (string, error) {
 		return "", errors.New("wallet error INSUFFICIENT_BALANCE")
@@ -346,7 +385,8 @@ func TestTipScreenShowsFailure(t *testing.T) {
 	m = typeText(t, m, "alice@example.com")
 	m, _ = press(t, m, tea.KeyMsg{Type: tea.KeyEnter})
 	m = typeText(t, m, "21")
-	m, cmd := press(t, m, tea.KeyMsg{Type: tea.KeyEnter})
+	m, _ = press(t, m, tea.KeyMsg{Type: tea.KeyEnter})
+	m, cmd := press(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("y")})
 	m, _ = press(t, m, cmd())
 	if !strings.Contains(m.View(), "Tip failed: wallet error INSUFFICIENT_BALANCE") {
 		t.Fatalf("failure not shown:\n%s", m.View())
@@ -765,6 +805,10 @@ func TestZapFromFeed(t *testing.T) {
 	}
 	m = typeText(t, m, "21")
 	m, cmd := press(t, m, tea.KeyMsg{Type: tea.KeyEnter})
+	if cmd != nil || m.tipping || m.tipStep != 2 || !strings.Contains(m.View(), "Zap 21 sats to Alice?") {
+		t.Fatalf("zap confirmation not shown: step=%d\n%s", m.tipStep, m.View())
+	}
+	m, cmd = press(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("y")})
 	m, _ = run(t, m, cmd)
 	if pk != strings.Repeat("a", 64) || id != strings.Repeat("1", 64) || sats != 21 {
 		t.Fatalf("OnZap(%s, %s, %d)", pk, id, sats)

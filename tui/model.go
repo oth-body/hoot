@@ -194,8 +194,9 @@ type Model struct {
 	onTip func(target string, sats int64) (string, error)
 
 	// Tip screen state
-	tipStep   int    // 0 = entering recipient, 1 = entering amount
+	tipStep   int    // 0 = entering recipient, 1 = entering amount, 2 = confirming
 	tipTarget string // recipient from step 0
+	tipAmount int64  // amount in sats awaiting confirmation in step 2
 
 	secretPrompt bool // the open prompt is a password/nsec (Ctrl+R reveals)
 	tipping      bool // payment in flight
@@ -324,6 +325,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.screen == ScreenFeed && key == "g" && m.onLoadFollowingFeed != nil {
 			m.feedFollowing = !m.feedFollowing
 			return m, m.reloadFeed()
+		}
+		if m.screen == ScreenTip && m.tipStep == 2 && key != "ctrl+c" {
+			return m.handleTipConfirmKey(key)
 		}
 
 		switch key {

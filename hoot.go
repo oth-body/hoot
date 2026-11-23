@@ -86,7 +86,10 @@ func main() {
 	// NWC / Tipping flags
 	nwcPtr := flag.String("nwc", "", "Set NWC URI for tipping")
 	tipPtr := flag.Int64("tip", 0, "Amount in sats to tip (requires -user)")
-	tipUserPtr := flag.String("user", "", "User to tip (npub or hex pubkey)")
+	zapPtr := flag.Int64("zap", 0, "Amount in sats to zap (requires -user with an npub or hex pubkey)")
+	zapEventPtr := flag.String("event", "", "Event ID (hex, note1 or nevent1) to zap (use with -zap)")
+	zapCommentPtr := flag.String("comment", "", "Optional comment for a zap (use with -zap)")
+	tipUserPtr := flag.String("user", "", "User to tip or zap (lightning address, npub or hex pubkey)")
 
 	// NIP-89 related flags
 	registerHandlerPtr := flag.String("register-handler", "", "Register as handler for kinds (comma-separated)")
@@ -126,6 +129,16 @@ func main() {
 		return
 	}
 
+	if *tipPtr > 0 && *zapPtr > 0 {
+		log.Fatalf("Cannot use -tip and -zap together")
+	}
+	if *zapPtr < 0 {
+		log.Fatalf("Zap failed: amount must be a positive number of sats")
+	}
+	if *zapPtr == 0 && (*zapEventPtr != "" || *zapCommentPtr != "") {
+		log.Fatalf("Use -event and -comment together with -zap <sats>")
+	}
+
 	// Handle Tipping
 	if *tipPtr > 0 {
 		if *tipUserPtr == "" {
@@ -140,6 +153,33 @@ func main() {
 			fmt.Printf("Preimage: %s\n", res.Preimage)
 		}
 		return
+	}
+
+	// Validate -zap flags and wallet before prompting for the key password.
+	var zapRecipient, zapEventID string
+	if *zapPtr > 0 {
+		if *tipUserPtr == "" {
+			log.Fatalf("Please specify who to zap with -user (npub or hex pubkey)")
+		}
+		target := strings.TrimSpace(*tipUserPtr)
+		if strings.Contains(target, "@") {
+			log.Fatalf("Zap requires an npub or hex pubkey (use -tip for a Lightning address)")
+		}
+		var err error
+		zapRecipient, err = parsePubKey(target)
+		if err != nil {
+			log.Fatalf("Invalid -user for -zap: %v", err)
+		}
+		if *zapEventPtr != "" {
+			er, err := parseEventRef(*zapEventPtr)
+			if err != nil {
+				log.Fatalf("Invalid -event: %v", err)
+			}
+			zapEventID = er.ID
+		}
+		if _, err := loadNWC(); err != nil {
+			log.Fatalf("Zap failed: %v", err)
+		}
 	}
 
 	// Check if key exists. Profiles created in the TUI count too —
@@ -174,9 +214,13 @@ func main() {
 		}
 	}
 
+	if *zapPtr > 0 && !keyExists {
+		log.Fatalf("No key stored: add a profile in the TUI, or run: hoot -s -k <nsec>")
+	}
+
 	// Interactive Login if no key found and no store flag
 	// Use flag.NFlag() == 0 to assume interactive mode if no flags provided
-	if !keyExists && !*storePtr && *messagePtr == "" && *updatePtr == "" && len(setFlags) == 0 && !*profilePtr && !*listPtr && *nwcPtr == "" && *tipPtr == 0 {
+	if !keyExists && !*storePtr && *messagePtr == "" && *updatePtr == "" && len(setFlags) == 0 && !*profilePtr && !*listPtr && *nwcPtr == "" && *tipPtr == 0 && *zapPtr == 0 {
 		fmt.Println("No private key found.")
 		fmt.Print("Enter your Nostr private key (nsec) to login: ")
 		var input string
@@ -246,6 +290,25 @@ func main() {
 	if *npubPtr {
 		npub, _ := nip19.EncodePublicKey(pk)
 		fmt.Println(npub)
+		return
+	}
+
+	// Handle CLI Zap (NIP-57; requires the unlocked key to sign the zap request)
+	if *zapPtr > 0 {
+		useLocalKey(sk)
+		res, err := zapUser(context.Background(), zapRecipient, zapEventID, *zapPtr, *zapCommentPtr)
+		if err != nil {
+			log.Printf("Zap failed: %v", err)
+			os.Exit(1)
+		}
+		out := res.String()
+		if !res.Zapped {
+			out += " (their address doesn't support zaps, so it was sent as a plain tip)"
+		}
+		fmt.Println(out)
+		if res.Preimage != "" {
+			fmt.Printf("Preimage: %s\n", res.Preimage)
+		}
 		return
 	}
 

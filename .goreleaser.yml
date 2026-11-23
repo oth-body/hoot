@@ -35,7 +35,8 @@ archives:
     files:
       - LICENSE
       - README.md
-      - relays.txt
+      - CHANGELOG.md
+      - relays.example.txt
       - assets/**/*
 
 checksum:

@@ -409,3 +409,36 @@ func TestE2ENWCEncryptionNegotiation(t *testing.T) {
 		t.Fatalf("nip44 wallet: scheme = %v, result %+v", got, res)
 	}
 }
+
+func TestE2ECLIZapFlag(t *testing.T) {
+	f := newTipFixture(t)
+	f.allowsNostr = true
+	me := nostr.GeneratePrivateKey()
+	mePK, _ := nostr.GetPublicKey(me)
+	nsec, _ := nip19.EncodePrivateKey(me)
+	if _, err := AddProfile("zapper", nsec, "pw"); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("HOOT_PASSWORD", "pw")
+
+	to := f.recipient(t)
+	npub, _ := nip19.EncodePublicKey(to)
+	eventID := strings.Repeat("c", 64)
+	noteID, _ := nip19.EncodeNote(eventID)
+
+	out := runMainCapture(t, "-zap", "21", "-user", npub, "-event", noteID, "-comment", "cli zap!")
+	if !strings.Contains(out, "Zapped 21 sats to "+f.address) || !strings.Contains(out, "Preimage:") {
+		t.Fatalf("CLI -zap output:\n%s", out)
+	}
+	raw, _ := f.zapRequest.Load().(string)
+	var zr nostr.Event
+	if err := json.Unmarshal([]byte(raw), &zr); err != nil {
+		t.Fatalf("zap request param %q: %v", raw, err)
+	}
+	if ok, _ := zr.CheckSignature(); !ok || zr.Kind != 9734 || zr.PubKey != mePK || zr.Content != "cli zap!" {
+		t.Fatalf("zap request = %+v", zr)
+	}
+	if tag := zr.Tags.GetFirst([]string{"e"}); tag == nil || (*tag)[1] != eventID {
+		t.Fatalf("e tag = %v, want %s", tag, eventID)
+	}
+}
